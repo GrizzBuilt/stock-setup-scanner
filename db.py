@@ -37,3 +37,30 @@ def get_watchlist():
     conn.close()
 
     return [row["symbol"] for row in rows]
+
+
+def add_symbol(symbol):
+    symbol = symbol.upper().strip()
+
+    if not symbol:
+        return
+
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO watchlist (symbol) VALUES (?)",
+        (symbol,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_symbol(symbol):
+    symbol = symbol.upper().strip()
+
+    conn = get_connection()
+    conn.execute(
+        "DELETE FROM watchlist WHERE symbol = ?",
+        (symbol,)
+    )
+    conn.commit()
+    conn.close()

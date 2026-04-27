@@ -1,10 +1,27 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, request, redirect, url_for
 
 import yfinance as yf
 
-from db import init_db, get_watchlist
+from db import init_db, get_watchlist, add_symbol, remove_symbol
 
 app = Flask(__name__)
+
+
+def empty_stock(symbol, message="No data"):
+    return {
+        "symbol": symbol,
+        "price": "—",
+        "open": "—",
+        "high": "—",
+        "low": "—",
+        "percent": 0,
+        "range_size": 0,
+        "status": "No Trade",
+        "entry": "—",
+        "stop": "—",
+        "target": "—",
+        "error": message,
+    }
 
 
 def get_stock_data(symbol):
@@ -13,7 +30,7 @@ def get_stock_data(symbol):
         data = ticker.history(period="1d")
 
         if data.empty:
-            return {"symbol": symbol, "error": "No data"}
+            return empty_stock(symbol, "No data")
 
         row = data.iloc[-1]
 
@@ -67,7 +84,7 @@ def get_stock_data(symbol):
         }
 
     except Exception as e:
-        return {"symbol": symbol, "error": str(e)}
+        return empty_stock(symbol, str(e))
 
 
 @app.route("/")
@@ -94,6 +111,19 @@ def home():
         stocks=stocks,
         focus_count=focus_count
     )
+
+
+@app.route("/add", methods=["POST"])
+def add():
+    symbol = request.form.get("symbol", "")
+    add_symbol(symbol)
+    return redirect(url_for("home"))
+
+
+@app.route("/remove/<symbol>", methods=["POST"])
+def remove(symbol):
+    remove_symbol(symbol)
+    return redirect(url_for("home"))
 
 
 if __name__ == "__main__":

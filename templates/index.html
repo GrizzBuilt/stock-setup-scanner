@@ -14,6 +14,12 @@
             Focus setups: <strong>{{ focus_count }}</strong>
         </p>
 
+        <!-- Add Symbol -->
+        <form method="POST" action="/add" style="margin-bottom: 16px;">
+            <input type="text" name="symbol" placeholder="Add ticker (e.g. AAPL)" required>
+            <button type="submit">Add</button>
+        </form>
+
         <label class="filter-row">
             <input type="checkbox" id="focusOnly">
             Show focus setups only
@@ -31,6 +37,7 @@
                         <th>Entry</th>
                         <th>Stop</th>
                         <th>Target</th>
+                        <th>Remove</th>
                     </tr>
                 </thead>
 
@@ -40,15 +47,27 @@
                             <td><strong>{{ stock.symbol }}</strong></td>
                             <td>{{ stock.price }}</td>
                             <td>{{ stock.percent }}%</td>
-                            <td class="range {{ 'range-strong' if stock.range_size >= 5 else 'range-medium' if stock.range_size >= 2 else 'range-weak' }}">
-    ${{ stock.range_size }}
-</td>
+
+                            <td class="
+                                {{ 'range-strong' if stock.range_size >= 5
+                                else 'range-medium' if stock.range_size >= 2
+                                else 'range-weak' }}">
+                                ${{ stock.range_size }}
+                            </td>
+
                             <td class="status {{ stock.status | lower | replace(' ', '-') }}">
                                 {{ stock.status }}
                             </td>
+
                             <td>{{ stock.entry }}</td>
                             <td>{{ stock.stop }}</td>
                             <td>{{ stock.target }}</td>
+
+                            <td>
+                                <form method="POST" action="/remove/{{ stock.symbol }}">
+                                    <button type="submit">X</button>
+                                </form>
+                            </td>
                         </tr>
                     {% endfor %}
                 </tbody>
