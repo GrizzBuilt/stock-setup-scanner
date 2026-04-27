@@ -25,12 +25,17 @@ def get_stock_data(symbol):
         change = price - open_price
         percent = (change / open_price) * 100 if open_price else 0
 
-        if percent > 1:
-            status = "Bullish"
-        elif percent < -1:
-            status = "Bearish"
+        range_size = high - low
+        near_high = price >= high - (range_size * 0.2)
+
+        if percent > 1 and near_high:
+            status = "Breakout Watch"
+        elif percent > 0 and price > open_price:
+            status = "Pullback"
+        elif abs(percent) < 0.5:
+            status = "Consolidation"
         else:
-            status = "Chop"
+            status = "No Trade"
 
         return {
             "symbol": symbol,
