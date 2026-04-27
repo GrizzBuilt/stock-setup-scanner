@@ -20,10 +20,21 @@
             <button type="submit">Add</button>
         </form>
 
-        <label class="filter-row">
-            <input type="checkbox" id="focusOnly">
-            Show focus setups only
-        </label>
+  <div class="filter-row">
+    <label>
+        <input type="checkbox" id="focusOnly">
+        Show focus setups only
+    </label>
+
+    <label>
+        <input type="checkbox" id="rangeOnly">
+        Only show $2+ range
+    </label>
+    <label>
+    <input type="checkbox" id="sniperOnly">
+    Sniper mode
+</label>
+</div>
 
         <section class="card">
             <table>
@@ -43,7 +54,7 @@
 
                 <tbody>
                     {% for stock in stocks %}
-                        <tr data-status="{{ stock.status }}">
+                       <tr data-status="{{ stock.status }}" data-range="{{ stock.range_size }}">
                             <td><strong>{{ stock.symbol }}</strong></td>
                             <td>{{ stock.price }}</td>
                             <td>{{ stock.percent }}%</td>
@@ -74,26 +85,40 @@
             </table>
         </section>
     </main>
+<script>
+    const focusOnly = document.getElementById("focusOnly");
+    const rangeOnly = document.getElementById("rangeOnly");
+    const sniperOnly = document.getElementById("sniperOnly");
+    const rows = document.querySelectorAll("tbody tr");
 
-    <script>
-        const focusOnly = document.getElementById("focusOnly");
-        const rows = document.querySelectorAll("tbody tr");
+    function applyFilters() {
+        rows.forEach(function (row) {
+            const status = row.dataset.status;
+            const range = Number(row.dataset.range);
 
-        focusOnly.addEventListener("change", function () {
-            rows.forEach(function (row) {
-                const status = row.dataset.status;
+            const isFocus =
+                status === "Breakout Watch" ||
+                status === "Pullback";
 
-                const isFocus =
-                    status === "Breakout Watch" ||
-                    status === "Pullback";
+            const isSniper = status === "Breakout Watch";
 
-                row.style.display = focusOnly.checked && !isFocus ? "none" : "";
-            });
+            const passesFocus = !focusOnly.checked || isFocus;
+            const passesRange = !rangeOnly.checked || range >= 2;
+            const passesSniper = !sniperOnly.checked || isSniper;
+
+            row.style.display =
+                passesFocus && passesRange && passesSniper ? "" : "none";
         });
+    }
 
-        setInterval(function () {
-            window.location.reload();
-        }, 30000);
-    </script>
+    focusOnly.addEventListener("change", applyFilters);
+    rangeOnly.addEventListener("change", applyFilters);
+    sniperOnly.addEventListener("change", applyFilters);
+
+    setInterval(function () {
+        window.location.reload();
+    }, 30000);
+</script>
+    
 </body>
 </html>
