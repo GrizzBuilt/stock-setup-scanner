@@ -9,6 +9,13 @@
     <main class="page">
         <h1>Stock Setup Scanner</h1>
         <p class="subtitle">Morning swing setup dashboard</p>
+<p class="focus-count">
+    Focus setups: <strong>{{ focus_count }}</strong>
+</p>
+        <label class="filter-row">
+            <input type="checkbox" id="focusOnly">
+            Show focus setups only
+        </label>
 
         <section class="card">
             <table>
@@ -26,13 +33,13 @@
 
                 <tbody>
                     {% for stock in stocks %}
-                        <tr>
+                        <tr data-status="{{ stock.status }}">
                             <td><strong>{{ stock.symbol }}</strong></td>
                             <td>{{ stock.price }}</td>
                             <td>{{ stock.percent }}%</td>
                             <td class="status {{ stock.status | lower | replace(' ', '-') }}">
-    {{ stock.status }}
-</td>
+                                {{ stock.status }}
+                            </td>
                             <td>{{ stock.entry }}</td>
                             <td>{{ stock.stop }}</td>
                             <td>{{ stock.target }}</td>
@@ -42,5 +49,26 @@
             </table>
         </section>
     </main>
+
+    <script>
+        const focusOnly = document.getElementById("focusOnly");
+        const rows = document.querySelectorAll("tbody tr");
+
+        focusOnly.addEventListener("change", function () {
+            rows.forEach(function (row) {
+                const status = row.dataset.status;
+
+                const isFocus =
+                    status === "Breakout Watch" ||
+                    status === "Pullback";
+
+                row.style.display = focusOnly.checked && !isFocus ? "none" : "";
+            });
+        });
+    </script><script>
+    setInterval(function () {
+        window.location.reload();
+    }, 30000); // refresh every 60 seconds
+</script>
 </body>
 </html>

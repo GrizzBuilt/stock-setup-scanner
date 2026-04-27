@@ -74,31 +74,16 @@ def home():
     symbols = get_watchlist()
     stocks = [get_stock_data(symbol) for symbol in symbols]
 
-    return render_template("index.html", stocks=stocks)
+    focus_count = sum(
+        1 for stock in stocks
+        if stock.get("status") in ["Breakout Watch", "Pullback"]
+    )
 
-    for stock in stocks:
-        if stock.get("error"):
-            rows += f"<li>{stock['symbol']} - ERROR: {stock['error']}</li>"
-        else:
-            rows += f"""
-            <li>
-                <strong>{stock['symbol']}</strong> |
-                Price: {stock['price']} |
-                Change: {stock['percent']}% |
-                Status: {stock['status']} |
-                Entry: {stock['entry']} |
-                Stop: {stock['stop']} |
-                Target: {stock['target']}
-            </li>
-            """
-
-    return f"""
-    <h1>Stock Setup Scanner</h1>
-    <p>Live Data:</p>
-    <ul>
-        {rows}
-    </ul>
-    """
+    return render_template(
+        "index.html",
+        stocks=stocks,
+        focus_count=focus_count
+    )
 
 
 if __name__ == "__main__":

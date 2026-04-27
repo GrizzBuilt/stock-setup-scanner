@@ -62,4 +62,8 @@ td {
 
 .no-trade {
     color: #9ca3af;
+}.focus-count {
+    margin-top: 4px;
+    color: #4ade80;
+    font-weight: bold;
 }
