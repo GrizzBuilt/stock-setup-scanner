@@ -2,37 +2,45 @@
 <html>
 <head>
     <title>Stock Setup Scanner</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
+
 <body>
-    <h1>Stock Setup Scanner</h1>
-    <p>Morning swing setup dashboard</p>
+    <main class="page">
+        <h1>Stock Setup Scanner</h1>
+        <p class="subtitle">Morning swing setup dashboard</p>
 
-    <table border="1" cellpadding="8">
-        <thead>
-            <tr>
-                <th>Symbol</th>
-                <th>Price</th>
-                <th>Change</th>
-                <th>Status</th>
-                <th>Entry</th>
-                <th>Stop</th>
-                <th>Target</th>
-            </tr>
-        </thead>
+        <section class="card">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Price</th>
+                        <th>Change</th>
+                        <th>Status</th>
+                        <th>Entry</th>
+                        <th>Stop</th>
+                        <th>Target</th>
+                    </tr>
+                </thead>
 
-        <tbody>
-            {% for stock in stocks %}
-                <tr>
-                    <td><strong>{{ stock.symbol }}</strong></td>
-                    <td>{{ stock.price }}</td>
-                    <td>{{ stock.percent }}%</td>
-                    <td>{{ stock.status }}</td>
-                    <td>{{ stock.entry }}</td>
-                    <td>{{ stock.stop }}</td>
-                    <td>{{ stock.target }}</td>
-                </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                <tbody>
+                    {% for stock in stocks %}
+                        <tr>
+                            <td><strong>{{ stock.symbol }}</strong></td>
+                            <td>{{ stock.price }}</td>
+                            <td>{{ stock.percent }}%</td>
+                            <td class="status {{ stock.status | lower | replace(' ', '-') }}">
+    {{ stock.status }}
+</td>
+                            <td>{{ stock.entry }}</td>
+                            <td>{{ stock.stop }}</td>
+                            <td>{{ stock.target }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </main>
 </body>
 </html>
