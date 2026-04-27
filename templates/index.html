@@ -9,9 +9,11 @@
     <main class="page">
         <h1>Stock Setup Scanner</h1>
         <p class="subtitle">Morning swing setup dashboard</p>
-<p class="focus-count">
-    Focus setups: <strong>{{ focus_count }}</strong>
-</p>
+
+        <p class="focus-count">
+            Focus setups: <strong>{{ focus_count }}</strong>
+        </p>
+
         <label class="filter-row">
             <input type="checkbox" id="focusOnly">
             Show focus setups only
@@ -24,6 +26,7 @@
                         <th>Symbol</th>
                         <th>Price</th>
                         <th>Change</th>
+                        <th>Range</th>
                         <th>Status</th>
                         <th>Entry</th>
                         <th>Stop</th>
@@ -37,6 +40,9 @@
                             <td><strong>{{ stock.symbol }}</strong></td>
                             <td>{{ stock.price }}</td>
                             <td>{{ stock.percent }}%</td>
+                            <td class="range {{ 'range-strong' if stock.range_size >= 5 else 'range-medium' if stock.range_size >= 2 else 'range-weak' }}">
+    ${{ stock.range_size }}
+</td>
                             <td class="status {{ stock.status | lower | replace(' ', '-') }}">
                                 {{ stock.status }}
                             </td>
@@ -65,10 +71,10 @@
                 row.style.display = focusOnly.checked && !isFocus ? "none" : "";
             });
         });
-    </script><script>
-    setInterval(function () {
-        window.location.reload();
-    }, 30000); // refresh every 60 seconds
-</script>
+
+        setInterval(function () {
+            window.location.reload();
+        }, 30000);
+    </script>
 </body>
 </html>

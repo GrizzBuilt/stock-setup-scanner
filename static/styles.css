@@ -67,3 +67,15 @@ td {
     color: #4ade80;
     font-weight: bold;
 }
+.range-strong {
+    color: #4ade80;
+    font-weight: bold;
+}
+
+.range-medium {
+    color: #fbbf24;
+}
+
+.range-weak {
+    color: #9ca3af;
+}
