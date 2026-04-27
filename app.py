@@ -58,6 +58,7 @@ def get_stock_data(symbol):
             "high": round(high, 2),
             "low": round(low, 2),
             "percent": round(percent, 2),
+            "range_size": round(range_size, 2),
             "status": status,
             "entry": round(entry, 2) if entry else "—",
             "stop": round(stop, 2) if stop else "—",
@@ -73,6 +74,15 @@ def get_stock_data(symbol):
 def home():
     symbols = get_watchlist()
     stocks = [get_stock_data(symbol) for symbol in symbols]
+
+    priority = {
+        "Breakout Watch": 1,
+        "Pullback": 2,
+        "Consolidation": 3,
+        "No Trade": 4
+    }
+
+    stocks.sort(key=lambda stock: priority.get(stock.get("status"), 99))
 
     focus_count = sum(
         1 for stock in stocks
