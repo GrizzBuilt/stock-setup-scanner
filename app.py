@@ -21,12 +21,62 @@ def empty_stock(symbol, message="No data"):
         "range_size": 0,
         "previous_high": "—",
         "previous_low": "—",
+        "distance_to_breakout": 999,
         "status": "No Trade",
+        "decision": "PASS",
+        "score": 0,
         "entry": "—",
         "stop": "—",
         "target": "—",
+        "ready_to_trigger": False,
         "error": message,
     }
+
+
+def score_setup(status, distance_to_breakout, range_size, percent):
+    score = 0
+
+    if status == "Breakout Triggered":
+        score += 4
+    elif status == "Breakout Watch":
+        score += 3
+    elif status == "Pullback":
+        score += 2
+    elif status == "Extended":
+        score += 0
+    else:
+        score += 0
+
+    abs_distance = abs(distance_to_breakout)
+
+    if abs_distance <= 0.25:
+        score += 3
+    elif abs_distance <= 0.5:
+        score += 2
+    elif abs_distance <= 1:
+        score += 1
+
+    if range_size >= 5:
+        score += 2
+    elif range_size >= 3:
+        score += 1.5
+    elif range_size >= 2:
+        score += 1
+
+    if 0.5 <= percent <= 3:
+        score += 1
+    elif 0 < percent < 0.5:
+        score += 0.5
+    elif percent > 3:
+        score += 0.25
+
+    if status == "Extended":
+        score = min(score, 2)
+
+    if status == "No Trade":
+        score = min(score, 3)
+
+    return min(round(score), 10)
 
 
 def get_stock_data(symbol):
@@ -50,34 +100,52 @@ def get_stock_data(symbol):
 
         change = price - open_price
         percent = (change / open_price) * 100 if open_price else 0
-
         range_size = high - low
-        near_prev_high = price >= previous_high * 0.995
-        ready_to_trigger = price >= previous_high * 0.9975
-        distance_to_breakout = ((previous_high - price) / previous_high) * 100
+
+        distance_to_breakout = ((price - previous_high) / previous_high) * 100
 
         status = "No Trade"
-        entry = None
-        stop = None
-        target = None
+        decision = "PASS"
+        entry = "—"
+        stop = "—"
+        target = "—"
 
-        if percent > 0.5 and near_prev_high:
+        if -0.5 <= distance_to_breakout <= 0:
             status = "Breakout Watch"
+            decision = "WATCH"
             entry = previous_high
             stop = previous_low
             target = previous_high + range_size
 
-        elif percent > 0 and price > open_price:
+        elif 0 < distance_to_breakout <= 1:
+            status = "Breakout Triggered"
+            decision = "TRADE"
+            entry = previous_high
+            stop = previous_low
+            target = previous_high + range_size
+
+        elif distance_to_breakout > 1:
+            status = "Extended"
+            decision = "PASS"
+
+        elif percent > 0 and price > open_price and range_size >= 2:
             status = "Pullback"
+            decision = "WATCH"
             entry = price
             stop = low
             target = price + 3
 
-        elif abs(percent) < 0.5:
-            status = "Consolidation"
-            entry = high
-            stop = low
-            target = high + 3
+        score = score_setup(
+            status=status,
+            distance_to_breakout=distance_to_breakout,
+            range_size=range_size,
+            percent=percent,
+        )
+
+        ready_to_trigger = (
+            status in ["Breakout Watch", "Breakout Triggered"]
+            and abs(distance_to_breakout) <= 0.25
+        )
 
         return {
             "symbol": symbol,
@@ -89,11 +157,13 @@ def get_stock_data(symbol):
             "range_size": round(range_size, 2),
             "previous_high": round(previous_high, 2),
             "previous_low": round(previous_low, 2),
-            "status": status,
-            "entry": round(entry, 2) if entry else "—",
-            "stop": round(stop, 2) if stop else "—",
-            "target": round(target, 2) if target else "—",
             "distance_to_breakout": round(distance_to_breakout, 2),
+            "status": status,
+            "decision": decision,
+            "score": score,
+            "entry": round(entry, 2) if isinstance(entry, float) else entry,
+            "stop": round(stop, 2) if isinstance(stop, float) else stop,
+            "target": round(target, 2) if isinstance(target, float) else target,
             "ready_to_trigger": ready_to_trigger,
             "error": None,
         }
@@ -108,23 +178,35 @@ def home():
     stocks = [get_stock_data(symbol) for symbol in symbols]
 
     priority = {
-        "Breakout Watch": 1,
-        "Pullback": 2,
-        "Consolidation": 3,
-        "No Trade": 4,
+        "Breakout Triggered": 1,
+        "Breakout Watch": 2,
+        "Pullback": 3,
+        "Extended": 4,
+        "No Trade": 5,
     }
 
-    stocks.sort(key=lambda stock: priority.get(stock.get("status"), 99))
+    stocks.sort(
+        key=lambda stock: (
+            priority.get(stock.get("status"), 99),
+            -stock.get("score", 0),
+        )
+    )
 
     focus_count = sum(
         1 for stock in stocks
-        if stock.get("status") in ["Breakout Watch", "Pullback"]
+        if stock.get("decision") in ["TRADE", "WATCH"]
+    )
+
+    trade_count = sum(
+        1 for stock in stocks
+        if stock.get("decision") == "TRADE"
     )
 
     return render_template(
         "index.html",
         stocks=stocks,
         focus_count=focus_count,
+        trade_count=trade_count,
         last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
 

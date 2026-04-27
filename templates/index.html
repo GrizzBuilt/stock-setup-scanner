@@ -10,39 +10,41 @@
         <h1>Stock Setup Scanner</h1>
         <p class="subtitle">Morning swing setup dashboard</p>
 
-        <p class="focus-count">
-            Focus setups: <strong>{{ focus_count }}</strong>
-        </p>
-<p class="timestamp">
-    Last updated: <strong>{{ last_updated }}</strong>
-</p>
-        <!-- Add Symbol -->
-        <form method="POST" action="/add" style="margin-bottom: 16px;">
+        <div class="summary-row">
+            <p class="focus-count">Focus setups: <strong>{{ focus_count }}</strong></p>
+            <p class="trade-count">Trade now: <strong>{{ trade_count }}</strong></p>
+            <p class="timestamp">Last updated: <strong>{{ last_updated }}</strong></p>
+        </div>
+
+        <form method="POST" action="/add" class="add-form">
             <input type="text" name="symbol" placeholder="Add ticker (e.g. AAPL)" required>
             <button type="submit">Add</button>
         </form>
 
-  <div class="filter-row">
-    <label>
-        <input type="checkbox" id="focusOnly">
-        Show focus setups only
-    </label>
+        <div class="filter-row">
+            <label>
+                <input type="checkbox" id="focusOnly">
+                Show focus setups only
+            </label>
 
-    <label>
-        <input type="checkbox" id="rangeOnly">
-        Only show $2+ range
-    </label>
-    <label>
-    <input type="checkbox" id="sniperOnly">
-    Sniper mode
-</label>
-</div>
+            <label>
+                <input type="checkbox" id="rangeOnly">
+                Only show $2+ range
+            </label>
+
+            <label>
+                <input type="checkbox" id="sniperOnly">
+                Sniper mode
+            </label>
+        </div>
 
         <section class="card">
             <table>
                 <thead>
                     <tr>
                         <th>Symbol</th>
+                        <th>Decision</th>
+                        <th>Score</th>
                         <th>Price</th>
                         <th>Change</th>
                         <th>Range</th>
@@ -59,12 +61,23 @@
 
                 <tbody>
                     {% for stock in stocks %}
-                       <tr
-    data-status="{{ stock.status }}"
-    data-range="{{ stock.range_size }}"
-    class="{{ 'ready-row' if stock.ready_to_trigger else '' }}"
->
+                        <tr
+                            data-status="{{ stock.status }}"
+                            data-decision="{{ stock.decision }}"
+                            data-range="{{ stock.range_size }}"
+                            class="
+                                {{ 'ready-row' if stock.ready_to_trigger else '' }}
+                                {{ 'extended-row' if stock.status == 'Extended' else '' }}
+                            "
+                        >
                             <td><strong>{{ stock.symbol }}</strong></td>
+
+                            <td class="decision {{ stock.decision | lower }}">
+                                {{ stock.decision }}
+                            </td>
+
+                            <td class="score">{{ stock.score }}/10</td>
+
                             <td>{{ stock.price }}</td>
                             <td>{{ stock.percent }}%</td>
 
@@ -74,14 +87,17 @@
                                 else 'range-weak' }}">
                                 ${{ stock.range_size }}
                             </td>
+
                             <td>{{ stock.previous_high }}</td>
                             <td>{{ stock.previous_low }}</td>
+
                             <td class="
-    {{ 'dist-close' if stock.distance_to_breakout <= 0.25
-    else 'dist-mid' if stock.distance_to_breakout <= 1
-    else 'dist-far' }}">
-    {{ stock.distance_to_breakout }}%
-</td>
+                                {{ 'dist-close' if stock.distance_to_breakout >= -0.25 and stock.distance_to_breakout <= 0.25
+                                else 'dist-mid' if stock.distance_to_breakout >= -0.5 and stock.distance_to_breakout <= 1
+                                else 'dist-far' }}">
+                                {{ stock.distance_to_breakout }}%
+                            </td>
+
                             <td class="status {{ stock.status | lower | replace(' ', '-') }}">
                                 {{ stock.status }}
                             </td>
@@ -92,7 +108,7 @@
 
                             <td>
                                 <form method="POST" action="/remove/{{ stock.symbol }}">
-                                    <button type="submit">X</button>
+                                    <button type="submit" class="remove-btn">X</button>
                                 </form>
                             </td>
                         </tr>
@@ -101,40 +117,43 @@
             </table>
         </section>
     </main>
-<script>
-    const focusOnly = document.getElementById("focusOnly");
-    const rangeOnly = document.getElementById("rangeOnly");
-    const sniperOnly = document.getElementById("sniperOnly");
-    const rows = document.querySelectorAll("tbody tr");
 
-    function applyFilters() {
-        rows.forEach(function (row) {
-            const status = row.dataset.status;
-            const range = Number(row.dataset.range);
+    <script>
+        const focusOnly = document.getElementById("focusOnly");
+        const rangeOnly = document.getElementById("rangeOnly");
+        const sniperOnly = document.getElementById("sniperOnly");
+        const rows = document.querySelectorAll("tbody tr");
 
-            const isFocus =
-                status === "Breakout Watch" ||
-                status === "Pullback";
+        function applyFilters() {
+            rows.forEach(function (row) {
+                const status = row.dataset.status;
+                const decision = row.dataset.decision;
+                const range = Number(row.dataset.range);
 
-            const isSniper = status === "Breakout Watch";
+                const isFocus =
+                    decision === "TRADE" ||
+                    decision === "WATCH";
 
-            const passesFocus = !focusOnly.checked || isFocus;
-            const passesRange = !rangeOnly.checked || range >= 2;
-            const passesSniper = !sniperOnly.checked || isSniper;
+                const isSniper =
+                    status === "Breakout Watch" ||
+                    status === "Breakout Triggered";
 
-            row.style.display =
-                passesFocus && passesRange && passesSniper ? "" : "none";
-        });
-    }
+                const passesFocus = !focusOnly.checked || isFocus;
+                const passesRange = !rangeOnly.checked || range >= 2;
+                const passesSniper = !sniperOnly.checked || isSniper;
 
-    focusOnly.addEventListener("change", applyFilters);
-    rangeOnly.addEventListener("change", applyFilters);
-    sniperOnly.addEventListener("change", applyFilters);
+                row.style.display =
+                    passesFocus && passesRange && passesSniper ? "" : "none";
+            });
+        }
 
-    setInterval(function () {
-        window.location.reload();
-    }, 30000);
-</script>
-    
+        focusOnly.addEventListener("change", applyFilters);
+        rangeOnly.addEventListener("change", applyFilters);
+        sniperOnly.addEventListener("change", applyFilters);
+
+        setInterval(function () {
+            window.location.reload();
+        }, 30000);
+    </script>
 </body>
 </html>
