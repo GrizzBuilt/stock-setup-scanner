@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, render_template
 
 import yfinance as yf
 
@@ -74,7 +74,7 @@ def home():
     symbols = get_watchlist()
     stocks = [get_stock_data(symbol) for symbol in symbols]
 
-    rows = ""
+    return render_template("index.html", stocks=stocks)
 
     for stock in stocks:
         if stock.get("error"):
