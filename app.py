@@ -19,6 +19,8 @@ def empty_stock(symbol, message="No data"):
         "low": "—",
         "percent": 0,
         "range_size": 0,
+        "previous_high": "—",
+        "previous_low": "—",
         "status": "No Trade",
         "entry": "—",
         "stop": "—",
@@ -30,12 +32,16 @@ def empty_stock(symbol, message="No data"):
 def get_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period="1d")
+        data = ticker.history(period="5d")
 
-        if data.empty:
-            return empty_stock(symbol, "No data")
+        if data.empty or len(data) < 2:
+            return empty_stock(symbol, "Not enough data")
 
         row = data.iloc[-1]
+        previous_row = data.iloc[-2]
+
+        previous_high = float(previous_row["High"])
+        previous_low = float(previous_row["Low"])
 
         price = float(row["Close"])
         open_price = float(row["Open"])
@@ -46,18 +52,20 @@ def get_stock_data(symbol):
         percent = (change / open_price) * 100 if open_price else 0
 
         range_size = high - low
-        near_high = price >= high - (range_size * 0.2)
+        near_prev_high = price >= previous_high * 0.995
+        ready_to_trigger = price >= previous_high * 0.9975
+        distance_to_breakout = ((previous_high - price) / previous_high) * 100
 
         status = "No Trade"
         entry = None
         stop = None
         target = None
 
-        if percent > 1 and near_high:
+        if percent > 0.5 and near_prev_high:
             status = "Breakout Watch"
-            entry = high
-            stop = price - 2
-            target = price + 5
+            entry = previous_high
+            stop = previous_low
+            target = previous_high + range_size
 
         elif percent > 0 and price > open_price:
             status = "Pullback"
@@ -79,10 +87,14 @@ def get_stock_data(symbol):
             "low": round(low, 2),
             "percent": round(percent, 2),
             "range_size": round(range_size, 2),
+            "previous_high": round(previous_high, 2),
+            "previous_low": round(previous_low, 2),
             "status": status,
             "entry": round(entry, 2) if entry else "—",
             "stop": round(stop, 2) if stop else "—",
             "target": round(target, 2) if target else "—",
+            "distance_to_breakout": round(distance_to_breakout, 2),
+            "ready_to_trigger": ready_to_trigger,
             "error": None,
         }
 

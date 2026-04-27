@@ -84,3 +84,19 @@ td {
     font-size: 0.9rem;
     margin-top: 4px;
 }
+.ready-row {
+    background: rgba(74, 222, 128, 0.12);
+    box-shadow: inset 4px 0 0 #4ade80;
+}
+.dist-close {
+    color: #4ade80;
+    font-weight: bold;
+}
+
+.dist-mid {
+    color: #fbbf24;
+}
+
+.dist-far {
+    color: #9ca3af;
+}
