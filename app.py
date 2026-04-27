@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from flask import Flask, render_template, request, redirect, url_for
 
 import yfinance as yf
@@ -96,7 +99,7 @@ def home():
         "Breakout Watch": 1,
         "Pullback": 2,
         "Consolidation": 3,
-        "No Trade": 4
+        "No Trade": 4,
     }
 
     stocks.sort(key=lambda stock: priority.get(stock.get("status"), 99))
@@ -109,7 +112,8 @@ def home():
     return render_template(
         "index.html",
         stocks=stocks,
-        focus_count=focus_count
+        focus_count=focus_count,
+        last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
 
 

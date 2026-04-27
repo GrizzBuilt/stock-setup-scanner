@@ -79,3 +79,8 @@ td {
 .range-weak {
     color: #9ca3af;
 }
+.timestamp {
+    color: #9ca3af;
+    font-size: 0.9rem;
+    margin-top: 4px;
+}
