@@ -28,14 +28,28 @@ def get_stock_data(symbol):
         range_size = high - low
         near_high = price >= high - (range_size * 0.2)
 
+        status = "No Trade"
+        entry = None
+        stop = None
+        target = None
+
         if percent > 1 and near_high:
             status = "Breakout Watch"
+            entry = high
+            stop = price - 2
+            target = price + 5
+
         elif percent > 0 and price > open_price:
             status = "Pullback"
+            entry = price
+            stop = low
+            target = price + 3
+
         elif abs(percent) < 0.5:
             status = "Consolidation"
-        else:
-            status = "No Trade"
+            entry = high
+            stop = low
+            target = high + 3
 
         return {
             "symbol": symbol,
@@ -45,6 +59,9 @@ def get_stock_data(symbol):
             "low": round(low, 2),
             "percent": round(percent, 2),
             "status": status,
+            "entry": round(entry, 2) if entry else "—",
+            "stop": round(stop, 2) if stop else "—",
+            "target": round(target, 2) if target else "—",
             "error": None,
         }
 
@@ -65,10 +82,13 @@ def home():
         else:
             rows += f"""
             <li>
-                {stock['symbol']} |
+                <strong>{stock['symbol']}</strong> |
                 Price: {stock['price']} |
                 Change: {stock['percent']}% |
-                Status: {stock['status']}
+                Status: {stock['status']} |
+                Entry: {stock['entry']} |
+                Stop: {stock['stop']} |
+                Target: {stock['target']}
             </li>
             """
 
