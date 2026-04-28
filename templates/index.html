@@ -6,6 +6,7 @@ Main changes:
 - Updated filters to use decision/action/status
 - Added clear visual decision labels
 - Preserves filter checkbox settings during auto refresh
+- Added Focus column for the top 1–2 actionable setups
 -->
 
 <!DOCTYPE html>
@@ -50,6 +51,7 @@ Main changes:
             <table>
                 <thead>
                     <tr>
+                        <th>Focus</th>
                         <th>Symbol</th>
                         <th>Decision</th>
                         <th>Sniper</th>
@@ -80,8 +82,19 @@ Main changes:
                                 action-{{ stock.action | lower | replace(' ', '-') | replace('/', '') }}
                                 {{ 'sniper-row' if stock.sniper == 'YES' else '' }}
                                 {{ 'extended-row' if stock.status == 'Extended' else '' }}
+                                {{ 'focus-row focus-rank-' ~ stock.focus_rank if stock.focus_rank else '' }}
                             "
                         >
+                            <td>
+                                {% if stock.focus_label %}
+                                    <span class="pill focus-pill focus-rank-{{ stock.focus_rank }}">
+                                        #{{ stock.focus_rank }} {{ stock.focus_label }}
+                                    </span>
+                                {% else %}
+                                    <span class="muted">—</span>
+                                {% endif %}
+                            </td>
+
                             <td><strong>{{ stock.symbol }}</strong></td>
 
                             <td>

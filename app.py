@@ -7,6 +7,7 @@
 # - Added Score + Grade system
 # - Improved breakout + pullback classification
 # - Added reasoning text for decisions
+# - Added Focus Rank so the best 1–2 actionable setups rise to the top
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -24,14 +25,20 @@ def empty_stock(symbol, message="No data"):
     return {
         "symbol": symbol,
         "price": "—",
+        "percent": 0,
         "status": "No Trade",
         "decision": "PASS",
         "action": "PASS",
         "score": 0,
         "grade": "F",
         "sniper": "NO",
-        "rr": "—",
+        "rr": 0,
         "distance": 0,
+        "entry": "—",
+        "stop": "—",
+        "target": "—",
+        "focus_rank": "",
+        "focus_label": "",
         "reason": message,
     }
 
@@ -127,7 +134,7 @@ def get_stock_data(symbol):
         if reward > 0:
             score += 1
 
-        # penalties
+        # --- PENALTIES ---
         if status == "Extended":
             score -= 2
 
@@ -171,13 +178,13 @@ def get_stock_data(symbol):
 
         # --- REASON TEXT ---
         if status == "Extended":
-            reason = f"Price is {round(dist,2)}% above previous high. Extended."
+            reason = f"Price is {round(dist, 2)}% above previous high. Extended."
         elif status == "Breakout Triggered":
-            reason = f"Breakout triggered. RR {round(rr,2)}. Score {score}/10."
+            reason = f"Breakout triggered. RR {round(rr, 2)}. Score {score}/10."
         elif status == "Breakout Watch":
-            reason = f"Near breakout level. Watching for move."
+            reason = "Near breakout level. Watching for move."
         elif status == "Pullback":
-            reason = f"Pullback setup forming. Waiting confirmation."
+            reason = "Pullback setup forming. Waiting confirmation."
         else:
             reason = "No clean setup."
 
@@ -196,6 +203,8 @@ def get_stock_data(symbol):
             "entry": round(entry, 2),
             "stop": round(stop, 2),
             "target": round(target, 2),
+            "focus_rank": "",
+            "focus_label": "",
             "reason": reason,
         }
 
@@ -203,12 +212,93 @@ def get_stock_data(symbol):
         return empty_stock(symbol, str(e))
 
 
+def is_focus_candidate(stock):
+    """
+    A focus candidate is a setup that may deserve attention right now.
+    This stays strict on purpose.
+    """
+
+    return (
+        stock.get("decision") == "TRADE"
+        and stock.get("sniper") == "YES"
+        and stock.get("score", 0) >= 7
+        and stock.get("rr", 0) >= 1.5
+        and stock.get("status") != "Extended"
+    )
+
+
+def decision_priority(stock):
+    priorities = {
+        "TRADE": 0,
+        "WATCH": 1,
+        "PASS": 2,
+    }
+
+    return priorities.get(stock.get("decision"), 9)
+
+
+def grade_priority(stock):
+    priorities = {
+        "A+": 0,
+        "A": 1,
+        "B": 2,
+        "C": 3,
+        "F": 4,
+    }
+
+    return priorities.get(stock.get("grade"), 9)
+
+
+def scanner_sort_key(stock):
+    """
+    Sort order:
+    1. Sniper-ready TRADE setups first
+    2. TRADE before WATCH before PASS
+    3. Better grades first
+    4. Higher scores first
+    5. Better risk/reward first
+    6. Closest clean breakout distance first
+    """
+
+    focus_bonus = 0 if is_focus_candidate(stock) else 1
+
+    return (
+        focus_bonus,
+        decision_priority(stock),
+        grade_priority(stock),
+        -stock.get("score", 0),
+        -stock.get("rr", 0),
+        abs(stock.get("distance", 999)),
+        stock.get("symbol", ""),
+    )
+
+
+def add_focus_labels(stocks):
+    """
+    Marks only the top 1–2 strict trade candidates.
+    If there are no clean sniper TRADE setups, nothing gets a focus badge.
+    """
+
+    focus_candidates = [stock for stock in stocks if is_focus_candidate(stock)]
+
+    for index, stock in enumerate(focus_candidates[:2], start=1):
+        stock["focus_rank"] = index
+
+        if index == 1:
+            stock["focus_label"] = "BEST SETUP"
+        else:
+            stock["focus_label"] = "BACKUP SETUP"
+
+    return stocks
+
+
 @app.route("/")
 def home():
     symbols = get_watchlist()
     stocks = [get_stock_data(s) for s in symbols]
 
-    stocks.sort(key=lambda x: (-x["score"], x["decision"]))
+    stocks.sort(key=scanner_sort_key)
+    stocks = add_focus_labels(stocks)
 
     return render_template(
         "index.html",
