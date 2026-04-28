@@ -2,9 +2,10 @@
 File: templates/index.html
 Purpose: Stock Setup Scanner dashboard UI
 Main changes:
-- Added data-label attributes for mobile card layout
-- Kept desktop table structure
-- Improved mobile readability for phone use on Render
+- Keeps current table-based layout
+- Adds collapsible detail rows
+- Shows quick overview first
+- Expands to show Entry, Stop, Target, Reason, and Remove button
 -->
 
 <!DOCTYPE html>
@@ -64,26 +65,23 @@ Main changes:
                         <th>Change</th>
                         <th>Dist %</th>
                         <th>R/R</th>
-                        <th>Entry</th>
-                        <th>Stop</th>
-                        <th>Target</th>
-                        <th>Reason</th>
-                        <th>Remove</th>
+                        <th>Details</th>
                     </tr>
                 </thead>
 
                 <tbody>
                     {% for stock in stocks %}
                         <tr
-                            data-decision="{{ stock.decision }}"
-                            data-sniper="{{ stock.sniper }}"
-                            data-status="{{ stock.status }}"
                             class="
+                                main-row
                                 decision-row-{{ stock.decision | lower }}
                                 action-{{ stock.action | lower | replace(' ', '-') | replace('/', '') }}
                                 {{ 'sniper-row' if stock.sniper == 'YES' else '' }}
                                 {{ 'extended-row' if stock.status == 'Extended' else '' }}
                             "
+                            data-decision="{{ stock.decision }}"
+                            data-sniper="{{ stock.sniper }}"
+                            data-status="{{ stock.status }}"
                         >
                             <td data-label="Symbol" class="symbol-cell">
                                 <strong>{{ stock.symbol }}</strong>
@@ -144,26 +142,48 @@ Main changes:
                                 {{ stock.rr }}
                             </td>
 
-                            <td data-label="Entry">
-                                {{ stock.entry }}
+                            <td data-label="Details">
+                                <button type="button" class="expand-btn">+</button>
                             </td>
+                        </tr>
 
-                            <td data-label="Stop">
-                                {{ stock.stop }}
-                            </td>
+                        <tr
+                            class="details-row"
+                            data-decision="{{ stock.decision }}"
+                            data-sniper="{{ stock.sniper }}"
+                        >
+                            <td colspan="12">
+                                <div class="details-content">
+                                    <div class="details-grid">
+                                        <div>
+                                            <span>Entry</span>
+                                            <strong>{{ stock.entry }}</strong>
+                                        </div>
 
-                            <td data-label="Target">
-                                {{ stock.target }}
-                            </td>
+                                        <div>
+                                            <span>Stop</span>
+                                            <strong>{{ stock.stop }}</strong>
+                                        </div>
 
-                            <td data-label="Reason" class="reason-cell">
-                                {{ stock.reason }}
-                            </td>
+                                        <div>
+                                            <span>Target</span>
+                                            <strong>{{ stock.target }}</strong>
+                                        </div>
 
-                            <td data-label="Remove">
-                                <form method="POST" action="/remove/{{ stock.symbol }}">
-                                    <button type="submit" class="remove-btn">Remove</button>
-                                </form>
+                                        <div>
+                                            <span>Risk / Reward</span>
+                                            <strong>{{ stock.rr }}</strong>
+                                        </div>
+                                    </div>
+
+                                    <p class="reason-cell">
+                                        <strong>Reason:</strong> {{ stock.reason }}
+                                    </p>
+
+                                    <form method="POST" action="/remove/{{ stock.symbol }}">
+                                        <button type="submit" class="remove-btn">Remove {{ stock.symbol }}</button>
+                                    </form>
+                                </div>
                             </td>
                         </tr>
                     {% endfor %}
@@ -176,21 +196,54 @@ Main changes:
         const tradeOnly = document.getElementById("tradeOnly");
         const watchOnly = document.getElementById("watchOnly");
         const sniperOnly = document.getElementById("sniperOnly");
-        const rows = document.querySelectorAll("tbody tr");
+        const mainRows = document.querySelectorAll(".main-row");
 
         function applyFilters() {
-            rows.forEach(function (row) {
+            mainRows.forEach(function (row) {
                 const decision = row.dataset.decision;
                 const sniper = row.dataset.sniper;
+                const detailsRow = row.nextElementSibling;
 
                 const passesTrade = !tradeOnly.checked || decision === "TRADE";
                 const passesWatch = !watchOnly.checked || decision === "WATCH";
                 const passesSniper = !sniperOnly.checked || sniper === "YES";
 
-                row.style.display =
-                    passesTrade && passesWatch && passesSniper ? "" : "none";
+                const shouldShow = passesTrade && passesWatch && passesSniper;
+
+                row.style.display = shouldShow ? "" : "none";
+
+                if (!shouldShow && detailsRow) {
+                    detailsRow.style.display = "none";
+                    detailsRow.classList.remove("open");
+
+                    const button = row.querySelector(".expand-btn");
+                    if (button) {
+                        button.textContent = "+";
+                    }
+                }
             });
         }
+
+        document.querySelectorAll(".expand-btn").forEach(function (button) {
+            button.addEventListener("click", function () {
+                const row = button.closest("tr");
+                const detailsRow = row.nextElementSibling;
+
+                if (!detailsRow) {
+                    return;
+                }
+
+                detailsRow.classList.toggle("open");
+
+                if (detailsRow.classList.contains("open")) {
+                    detailsRow.style.display = "";
+                    button.textContent = "−";
+                } else {
+                    detailsRow.style.display = "none";
+                    button.textContent = "+";
+                }
+            });
+        });
 
         tradeOnly.addEventListener("change", applyFilters);
         watchOnly.addEventListener("change", applyFilters);
