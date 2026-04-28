@@ -1,3 +1,12 @@
+<!--
+File: templates/index.html
+Purpose: Stock Setup Scanner dashboard UI
+Main changes:
+- Added Sniper, Action, Grade, Risk/Reward, and Reason columns
+- Updated filters to use decision/action/status
+- Added clear visual decision labels
+-->
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -8,33 +17,31 @@
 <body>
     <main class="page">
         <h1>Stock Setup Scanner</h1>
-        <p class="subtitle">Morning swing setup dashboard</p>
+        <p class="subtitle">Strict swing trading setup scanner — built to avoid chasing.</p>
 
         <div class="summary-row">
-            <p class="focus-count">Focus setups: <strong>{{ focus_count }}</strong></p>
-            <p class="trade-count">Trade now: <strong>{{ trade_count }}</strong></p>
             <p class="timestamp">Last updated: <strong>{{ last_updated }}</strong></p>
         </div>
 
         <form method="POST" action="/add" class="add-form">
-            <input type="text" name="symbol" placeholder="Add ticker (e.g. AAPL)" required>
+            <input type="text" name="symbol" placeholder="Add ticker, ex: AAPL" required>
             <button type="submit">Add</button>
         </form>
 
         <div class="filter-row">
             <label>
-                <input type="checkbox" id="focusOnly">
-                Show focus setups only
+                <input type="checkbox" id="tradeOnly">
+                Show TRADE only
             </label>
 
             <label>
-                <input type="checkbox" id="rangeOnly">
-                Only show $2+ range
+                <input type="checkbox" id="watchOnly">
+                Show WATCH only
             </label>
 
             <label>
                 <input type="checkbox" id="sniperOnly">
-                Sniper mode
+                Sniper only
             </label>
         </div>
 
@@ -44,17 +51,19 @@
                     <tr>
                         <th>Symbol</th>
                         <th>Decision</th>
+                        <th>Sniper</th>
+                        <th>Grade</th>
                         <th>Score</th>
+                        <th>Action</th>
+                        <th>Status</th>
                         <th>Price</th>
                         <th>Change</th>
-                        <th>Range</th>
-                        <th>Prev High</th>
-                        <th>Prev Low</th>
                         <th>Dist %</th>
-                        <th>Status</th>
+                        <th>R/R</th>
                         <th>Entry</th>
                         <th>Stop</th>
                         <th>Target</th>
+                        <th>Reason</th>
                         <th>Remove</th>
                     </tr>
                 </thead>
@@ -62,49 +71,67 @@
                 <tbody>
                     {% for stock in stocks %}
                         <tr
-                            data-status="{{ stock.status }}"
                             data-decision="{{ stock.decision }}"
-                            data-range="{{ stock.range_size }}"
+                            data-sniper="{{ stock.sniper }}"
+                            data-status="{{ stock.status }}"
                             class="
-                                {{ 'ready-row' if stock.ready_to_trigger else '' }}
+                                decision-row-{{ stock.decision | lower }}
+                                action-{{ stock.action | lower | replace(' ', '-') | replace('/', '') }}
+                                {{ 'sniper-row' if stock.sniper == 'YES' else '' }}
                                 {{ 'extended-row' if stock.status == 'Extended' else '' }}
                             "
                         >
                             <td><strong>{{ stock.symbol }}</strong></td>
 
-                            <td class="decision {{ stock.decision | lower }}">
-                                {{ stock.decision }}
+                            <td>
+                                <span class="pill decision {{ stock.decision | lower }}">
+                                    {{ stock.decision }}
+                                </span>
+                            </td>
+
+                            <td>
+                                <span class="pill sniper-{{ stock.sniper | lower }}">
+                                    {{ stock.sniper }}
+                                </span>
+                            </td>
+
+                            <td>
+                                <span class="pill grade grade-{{ stock.grade | lower | replace('+', 'plus') }}">
+                                    {{ stock.grade }}
+                                </span>
                             </td>
 
                             <td class="score">{{ stock.score }}/10</td>
 
-                            <td>{{ stock.price }}</td>
-                            <td>{{ stock.percent }}%</td>
-
-                            <td class="
-                                {{ 'range-strong' if stock.range_size >= 5
-                                else 'range-medium' if stock.range_size >= 2
-                                else 'range-weak' }}">
-                                ${{ stock.range_size }}
-                            </td>
-
-                            <td>{{ stock.previous_high }}</td>
-                            <td>{{ stock.previous_low }}</td>
-
-                            <td class="
-                                {{ 'dist-close' if stock.distance_to_breakout >= -0.25 and stock.distance_to_breakout <= 0.25
-                                else 'dist-mid' if stock.distance_to_breakout >= -0.5 and stock.distance_to_breakout <= 1
-                                else 'dist-far' }}">
-                                {{ stock.distance_to_breakout }}%
+                            <td class="action-text">
+                                {{ stock.action }}
                             </td>
 
                             <td class="status {{ stock.status | lower | replace(' ', '-') }}">
                                 {{ stock.status }}
                             </td>
 
+                            <td>${{ stock.price }}</td>
+                            <td>{{ stock.percent }}%</td>
+
+                            <td class="
+                                {{ 'dist-close' if stock.distance >= -0.25 and stock.distance <= 0.25
+                                else 'dist-mid' if stock.distance >= -0.5 and stock.distance <= 1
+                                else 'dist-far' }}">
+                                {{ stock.distance }}%
+                            </td>
+
+                            <td class="{{ 'rr-good' if stock.rr >= 2 else 'rr-ok' if stock.rr >= 1.5 else 'rr-bad' }}">
+                                {{ stock.rr }}
+                            </td>
+
                             <td>{{ stock.entry }}</td>
                             <td>{{ stock.stop }}</td>
                             <td>{{ stock.target }}</td>
+
+                            <td class="reason-cell">
+                                {{ stock.reason }}
+                            </td>
 
                             <td>
                                 <form method="POST" action="/remove/{{ stock.symbol }}">
@@ -119,36 +146,27 @@
     </main>
 
     <script>
-        const focusOnly = document.getElementById("focusOnly");
-        const rangeOnly = document.getElementById("rangeOnly");
+        const tradeOnly = document.getElementById("tradeOnly");
+        const watchOnly = document.getElementById("watchOnly");
         const sniperOnly = document.getElementById("sniperOnly");
         const rows = document.querySelectorAll("tbody tr");
 
         function applyFilters() {
             rows.forEach(function (row) {
-                const status = row.dataset.status;
                 const decision = row.dataset.decision;
-                const range = Number(row.dataset.range);
+                const sniper = row.dataset.sniper;
 
-                const isFocus =
-                    decision === "TRADE" ||
-                    decision === "WATCH";
-
-                const isSniper =
-                    status === "Breakout Watch" ||
-                    status === "Breakout Triggered";
-
-                const passesFocus = !focusOnly.checked || isFocus;
-                const passesRange = !rangeOnly.checked || range >= 2;
-                const passesSniper = !sniperOnly.checked || isSniper;
+                const passesTrade = !tradeOnly.checked || decision === "TRADE";
+                const passesWatch = !watchOnly.checked || decision === "WATCH";
+                const passesSniper = !sniperOnly.checked || sniper === "YES";
 
                 row.style.display =
-                    passesFocus && passesRange && passesSniper ? "" : "none";
+                    passesTrade && passesWatch && passesSniper ? "" : "none";
             });
         }
 
-        focusOnly.addEventListener("change", applyFilters);
-        rangeOnly.addEventListener("change", applyFilters);
+        tradeOnly.addEventListener("change", applyFilters);
+        watchOnly.addEventListener("change", applyFilters);
         sniperOnly.addEventListener("change", applyFilters);
 
         setInterval(function () {

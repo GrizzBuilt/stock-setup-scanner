@@ -1,3 +1,12 @@
+/*
+File: static/styles.css
+Purpose: Stock Setup Scanner dashboard styling
+Main changes:
+- Added colors for TRADE / WATCH / PASS
+- Added Sniper, Grade, Action, Risk/Reward, and Extended styling
+- Added stronger row highlights for ready-now setups
+*/
+
 body {
     margin: 0;
     font-family: Arial, sans-serif;
@@ -6,7 +15,7 @@ body {
 }
 
 .page {
-    max-width: 1300px;
+    max-width: 1500px;
     margin: 0 auto;
     padding: 32px 16px;
 }
@@ -28,25 +37,10 @@ h1 {
     margin-bottom: 16px;
 }
 
-.focus-count,
-.trade-count,
-.timestamp {
-    margin: 0;
-    font-size: 0.95rem;
-}
-
-.focus-count {
-    color: #fbbf24;
-    font-weight: bold;
-}
-
-.trade-count {
-    color: #4ade80;
-    font-weight: bold;
-}
-
 .timestamp {
     color: #9ca3af;
+    margin: 0;
+    font-size: 0.95rem;
 }
 
 .add-form {
@@ -113,42 +107,98 @@ td {
     white-space: nowrap;
 }
 
-.status,
-.decision,
+.reason-cell {
+    min-width: 280px;
+    white-space: normal;
+    color: #d1d5db;
+    font-size: 0.9rem;
+}
+
 .score {
     font-weight: bold;
 }
 
+/* Pills */
+
+.pill {
+    display: inline-block;
+    padding: 5px 9px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: bold;
+}
+
+/* Decision colors */
+
 .trade {
+    background: rgba(74, 222, 128, 0.15);
     color: #4ade80;
 }
 
 .watch {
+    background: rgba(251, 191, 36, 0.15);
     color: #fbbf24;
 }
 
 .pass {
+    background: rgba(248, 113, 113, 0.15);
     color: #f87171;
 }
 
+/* Sniper */
+
+.sniper-yes {
+    background: rgba(74, 222, 128, 0.2);
+    color: #4ade80;
+}
+
+.sniper-no {
+    background: rgba(156, 163, 175, 0.15);
+    color: #9ca3af;
+}
+
+/* Grades */
+
+.grade-aplus {
+    background: rgba(74, 222, 128, 0.25);
+    color: #4ade80;
+}
+
+.grade-a {
+    background: rgba(34, 197, 94, 0.18);
+    color: #86efac;
+}
+
+.grade-b {
+    background: rgba(96, 165, 250, 0.18);
+    color: #60a5fa;
+}
+
+.grade-c {
+    background: rgba(251, 191, 36, 0.18);
+    color: #fbbf24;
+}
+
+.grade-f {
+    background: rgba(248, 113, 113, 0.16);
+    color: #f87171;
+}
+
+/* Status colors */
+
 .breakout-triggered {
     color: #4ade80;
+    font-weight: bold;
 }
 
 .breakout-watch {
     color: #fbbf24;
+    font-weight: bold;
 }
 
 .pullback {
     color: #60a5fa;
-}
-
-.consolidation {
-    color: #fbbf24;
-}
-
-.no-trade {
-    color: #9ca3af;
+    font-weight: bold;
 }
 
 .extended {
@@ -156,22 +206,41 @@ td {
     font-weight: bold;
 }
 
-.extended-row {
-    opacity: 0.6;
-}
-
-.range-strong {
-    color: #4ade80;
-    font-weight: bold;
-}
-
-.range-medium {
-    color: #fbbf24;
-}
-
-.range-weak {
+.no-trade {
     color: #9ca3af;
 }
+
+/* Action-based row styles */
+
+.action-ready-now {
+    background: rgba(74, 222, 128, 0.12);
+    box-shadow: inset 5px 0 0 #4ade80;
+}
+
+.action-watch-for-break {
+    background: rgba(251, 191, 36, 0.08);
+    box-shadow: inset 5px 0 0 #fbbf24;
+}
+
+.action-wait-for-pullback {
+    background: rgba(96, 165, 250, 0.08);
+    box-shadow: inset 5px 0 0 #60a5fa;
+}
+
+.action-too-late-extended {
+    background: rgba(248, 113, 113, 0.08);
+    box-shadow: inset 5px 0 0 #f87171;
+}
+
+.extended-row {
+    opacity: 0.65;
+}
+
+.sniper-row {
+    outline: 1px solid rgba(74, 222, 128, 0.35);
+}
+
+/* Distance */
 
 .dist-close {
     color: #4ade80;
@@ -186,9 +255,25 @@ td {
     color: #9ca3af;
 }
 
-.ready-row {
-    background: rgba(74, 222, 128, 0.12);
-    box-shadow: inset 4px 0 0 #4ade80;
+/* Risk reward */
+
+.rr-good {
+    color: #4ade80;
+    font-weight: bold;
+}
+
+.rr-ok {
+    color: #fbbf24;
+    font-weight: bold;
+}
+
+.rr-bad {
+    color: #f87171;
+    font-weight: bold;
+}
+
+.action-text {
+    font-weight: bold;
 }
 
 .remove-btn {

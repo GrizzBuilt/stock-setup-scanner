@@ -1,3 +1,13 @@
+# File: app.py
+# Purpose: Main Flask app + upgraded trading logic engine
+# Changes:
+# - Added Sniper Mode
+# - Added Action field
+# - Added Risk/Reward calculation
+# - Added Score + Grade system
+# - Improved breakout + pullback classification
+# - Added reasoning text for decisions
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -14,69 +24,16 @@ def empty_stock(symbol, message="No data"):
     return {
         "symbol": symbol,
         "price": "—",
-        "open": "—",
-        "high": "—",
-        "low": "—",
-        "percent": 0,
-        "range_size": 0,
-        "previous_high": "—",
-        "previous_low": "—",
-        "distance_to_breakout": 999,
         "status": "No Trade",
         "decision": "PASS",
+        "action": "PASS",
         "score": 0,
-        "entry": "—",
-        "stop": "—",
-        "target": "—",
-        "ready_to_trigger": False,
-        "error": message,
+        "grade": "F",
+        "sniper": "NO",
+        "rr": "—",
+        "distance": 0,
+        "reason": message,
     }
-
-
-def score_setup(status, distance_to_breakout, range_size, percent):
-    score = 0
-
-    if status == "Breakout Triggered":
-        score += 4
-    elif status == "Breakout Watch":
-        score += 3
-    elif status == "Pullback":
-        score += 2
-    elif status == "Extended":
-        score += 0
-    else:
-        score += 0
-
-    abs_distance = abs(distance_to_breakout)
-
-    if abs_distance <= 0.25:
-        score += 3
-    elif abs_distance <= 0.5:
-        score += 2
-    elif abs_distance <= 1:
-        score += 1
-
-    if range_size >= 5:
-        score += 2
-    elif range_size >= 3:
-        score += 1.5
-    elif range_size >= 2:
-        score += 1
-
-    if 0.5 <= percent <= 3:
-        score += 1
-    elif 0 < percent < 0.5:
-        score += 0.5
-    elif percent > 3:
-        score += 0.25
-
-    if status == "Extended":
-        score = min(score, 2)
-
-    if status == "No Trade":
-        score = min(score, 3)
-
-    return min(round(score), 10)
 
 
 def get_stock_data(symbol):
@@ -88,84 +45,158 @@ def get_stock_data(symbol):
             return empty_stock(symbol, "Not enough data")
 
         row = data.iloc[-1]
-        previous_row = data.iloc[-2]
-
-        previous_high = float(previous_row["High"])
-        previous_low = float(previous_row["Low"])
+        prev = data.iloc[-2]
 
         price = float(row["Close"])
         open_price = float(row["Open"])
         high = float(row["High"])
         low = float(row["Low"])
 
-        change = price - open_price
-        percent = (change / open_price) * 100 if open_price else 0
+        prev_high = float(prev["High"])
+        prev_low = float(prev["Low"])
+
+        percent = ((price - open_price) / open_price) * 100 if open_price else 0
         range_size = high - low
 
-        distance_to_breakout = ((price - previous_high) / previous_high) * 100
+        # --- DISTANCE FROM BREAKOUT ---
+        dist = ((price - prev_high) / prev_high) * 100
 
         status = "No Trade"
         decision = "PASS"
-        entry = "—"
-        stop = "—"
-        target = "—"
+        action = "PASS"
 
-        if -0.5 <= distance_to_breakout <= 0:
+        entry = prev_high
+        stop = prev_low
+        target = prev_high + range_size
+
+        # --- CLASSIFICATION ---
+        if -0.5 <= dist <= 0:
             status = "Breakout Watch"
             decision = "WATCH"
-            entry = previous_high
-            stop = previous_low
-            target = previous_high + range_size
+            action = "WATCH FOR BREAK"
 
-        elif 0 < distance_to_breakout <= 1:
+        elif 0 < dist <= 1:
             status = "Breakout Triggered"
             decision = "TRADE"
-            entry = previous_high
-            stop = previous_low
-            target = previous_high + range_size
+            action = "READY NOW"
 
-        elif distance_to_breakout > 1:
+        elif dist > 1:
             status = "Extended"
             decision = "PASS"
+            action = "TOO LATE / EXTENDED"
 
         elif percent > 0 and price > open_price and range_size >= 2:
             status = "Pullback"
             decision = "WATCH"
+            action = "WAIT FOR PULLBACK"
             entry = price
             stop = low
             target = price + 3
 
-        score = score_setup(
-            status=status,
-            distance_to_breakout=distance_to_breakout,
-            range_size=range_size,
-            percent=percent,
-        )
+        # --- RISK / REWARD ---
+        risk = entry - stop
+        reward = target - entry
+        rr = reward / risk if risk > 0 else 0
 
-        ready_to_trigger = (
-            status in ["Breakout Watch", "Breakout Triggered"]
-            and abs(distance_to_breakout) <= 0.25
-        )
+        # --- SCORE ---
+        score = 0
+
+        if status in ["Breakout Watch", "Breakout Triggered", "Pullback"]:
+            score += 2
+
+        if abs(dist) <= 0.25:
+            score += 2
+        elif abs(dist) <= 0.5:
+            score += 1
+
+        if range_size >= 3:
+            score += 2
+        elif range_size >= 2:
+            score += 1
+
+        if 0.5 <= percent <= 3:
+            score += 1
+
+        if rr >= 1.5:
+            score += 1
+        if rr >= 2:
+            score += 1
+
+        if risk > 0:
+            score += 1
+        if reward > 0:
+            score += 1
+
+        # penalties
+        if status == "Extended":
+            score -= 2
+
+        if rr < 1.5:
+            score -= 2
+
+        score = max(0, min(score, 10))
+
+        # --- SNIPER MODE ---
+        sniper = "NO"
+
+        if (
+            decision == "TRADE"
+            and score >= 7
+            and status in ["Breakout Triggered", "Pullback"]
+            and status != "Extended"
+            and risk > 0
+            and reward > 0
+            and rr >= 1.5
+            and abs(dist) <= 0.5
+        ):
+            sniper = "YES"
+
+        # --- FINAL DECISION OVERRIDE ---
+        if rr < 1.5 or risk <= 0:
+            decision = "PASS"
+            sniper = "NO"
+            action = "PASS"
+
+        # --- GRADE ---
+        if score >= 9 and sniper == "YES":
+            grade = "A+"
+        elif score == 8 and sniper == "YES":
+            grade = "A"
+        elif score == 7:
+            grade = "B"
+        elif score == 6:
+            grade = "C"
+        else:
+            grade = "F"
+
+        # --- REASON TEXT ---
+        if status == "Extended":
+            reason = f"Price is {round(dist,2)}% above previous high. Extended."
+        elif status == "Breakout Triggered":
+            reason = f"Breakout triggered. RR {round(rr,2)}. Score {score}/10."
+        elif status == "Breakout Watch":
+            reason = f"Near breakout level. Watching for move."
+        elif status == "Pullback":
+            reason = f"Pullback setup forming. Waiting confirmation."
+        else:
+            reason = "No clean setup."
 
         return {
             "symbol": symbol,
             "price": round(price, 2),
-            "open": round(open_price, 2),
-            "high": round(high, 2),
-            "low": round(low, 2),
             "percent": round(percent, 2),
-            "range_size": round(range_size, 2),
-            "previous_high": round(previous_high, 2),
-            "previous_low": round(previous_low, 2),
-            "distance_to_breakout": round(distance_to_breakout, 2),
             "status": status,
             "decision": decision,
+            "action": action,
             "score": score,
-            "entry": round(entry, 2) if isinstance(entry, float) else entry,
-            "stop": round(stop, 2) if isinstance(stop, float) else stop,
-            "target": round(target, 2) if isinstance(target, float) else target,
-            "ready_to_trigger": ready_to_trigger,
-            "error": None,
+            "grade": grade,
+            "sniper": sniper,
+            "rr": round(rr, 2) if rr else 0,
+            "distance": round(dist, 2),
+            "entry": round(entry, 2),
+            "stop": round(stop, 2),
+            "target": round(target, 2),
+            "reason": reason,
         }
 
     except Exception as e:
@@ -175,46 +206,20 @@ def get_stock_data(symbol):
 @app.route("/")
 def home():
     symbols = get_watchlist()
-    stocks = [get_stock_data(symbol) for symbol in symbols]
+    stocks = [get_stock_data(s) for s in symbols]
 
-    priority = {
-        "Breakout Triggered": 1,
-        "Breakout Watch": 2,
-        "Pullback": 3,
-        "Extended": 4,
-        "No Trade": 5,
-    }
-
-    stocks.sort(
-        key=lambda stock: (
-            priority.get(stock.get("status"), 99),
-            -stock.get("score", 0),
-        )
-    )
-
-    focus_count = sum(
-        1 for stock in stocks
-        if stock.get("decision") in ["TRADE", "WATCH"]
-    )
-
-    trade_count = sum(
-        1 for stock in stocks
-        if stock.get("decision") == "TRADE"
-    )
+    stocks.sort(key=lambda x: (-x["score"], x["decision"]))
 
     return render_template(
         "index.html",
         stocks=stocks,
-        focus_count=focus_count,
-        trade_count=trade_count,
         last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
 
 
 @app.route("/add", methods=["POST"])
 def add():
-    symbol = request.form.get("symbol", "")
-    add_symbol(symbol)
+    add_symbol(request.form.get("symbol", ""))
     return redirect(url_for("home"))
 
 
