@@ -8,6 +8,7 @@
 # - Improved breakout + pullback classification
 # - Added reasoning text for decisions
 # - Added Focus Rank so the best 1–2 actionable setups rise to the top
+# - Fixed decision override so WATCH setups are not automatically forced to PASS
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -43,6 +44,41 @@ def empty_stock(symbol, message="No data"):
     }
 
 
+def get_grade(score, sniper):
+    if score >= 9 and sniper == "YES":
+        return "A+"
+    if score >= 8 and sniper == "YES":
+        return "A"
+    if score >= 7:
+        return "B"
+    if score >= 6:
+        return "C"
+    return "F"
+
+
+def build_reason(status, decision, action, rr, score, dist, blockers):
+    blocker_text = ""
+
+    if blockers:
+        blocker_text = " Blocker: " + "; ".join(blockers) + "."
+
+    if status == "Extended":
+        return f"Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
+
+    if status == "Breakout Triggered":
+        if decision == "TRADE":
+            return f"Breakout triggered. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
+        return f"Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+
+    if status == "Breakout Watch":
+        return f"Near breakout level. Watching for confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+
+    if status == "Pullback":
+        return f"Pullback setup forming. Waiting confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+
+    return f"No clean setup.{blocker_text}"
+
+
 def get_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
@@ -65,7 +101,7 @@ def get_stock_data(symbol):
         percent = ((price - open_price) / open_price) * 100 if open_price else 0
         range_size = high - low
 
-        # --- DISTANCE FROM BREAKOUT ---
+        # --- DISTANCE FROM PREVIOUS HIGH ---
         dist = ((price - prev_high) / prev_high) * 100
 
         status = "No Trade"
@@ -76,7 +112,7 @@ def get_stock_data(symbol):
         stop = prev_low
         target = prev_high + range_size
 
-        # --- CLASSIFICATION ---
+        # --- SETUP CLASSIFICATION ---
         if -0.5 <= dist <= 0:
             status = "Breakout Watch"
             decision = "WATCH"
@@ -126,11 +162,13 @@ def get_stock_data(symbol):
 
         if rr >= 1.5:
             score += 1
+
         if rr >= 2:
             score += 1
 
         if risk > 0:
             score += 1
+
         if reward > 0:
             score += 1
 
@@ -138,10 +176,59 @@ def get_stock_data(symbol):
         if status == "Extended":
             score -= 2
 
-        if rr < 1.5:
+        if status == "Breakout Triggered" and rr < 1.5:
+            score -= 2
+
+        if risk <= 0:
             score -= 2
 
         score = max(0, min(score, 10))
+
+        # --- BLOCKERS ---
+        blockers = []
+
+        if status == "Extended":
+            blockers.append("too extended")
+
+        if risk <= 0:
+            blockers.append("invalid risk")
+
+        if reward <= 0:
+            blockers.append("no upside target")
+
+        if status == "Breakout Triggered" and rr < 1.5:
+            blockers.append("risk/reward below 1.5")
+
+        if status == "Breakout Triggered" and score < 7:
+            blockers.append("score below trade quality")
+
+        # --- FINAL TRADE DECISION ---
+        # Important:
+        # WATCH setups stay WATCH unless they are extended or invalid.
+        # TRADE setups must pass stricter requirements.
+        if status == "Breakout Triggered":
+            if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
+                decision = "TRADE"
+                action = "READY NOW"
+            else:
+                decision = "PASS"
+                action = "PASS"
+
+        elif status in ["Breakout Watch", "Pullback"]:
+            if status == "Breakout Watch":
+                decision = "WATCH"
+                action = "WATCH FOR BREAK"
+            else:
+                decision = "WATCH"
+                action = "WAIT FOR PULLBACK"
+
+        elif status == "Extended":
+            decision = "PASS"
+            action = "TOO LATE / EXTENDED"
+
+        else:
+            decision = "PASS"
+            action = "PASS"
 
         # --- SNIPER MODE ---
         sniper = "NO"
@@ -149,44 +236,27 @@ def get_stock_data(symbol):
         if (
             decision == "TRADE"
             and score >= 7
-            and status in ["Breakout Triggered", "Pullback"]
-            and status != "Extended"
+            and status == "Breakout Triggered"
             and risk > 0
             and reward > 0
             and rr >= 1.5
-            and abs(dist) <= 0.5
+            and 0 < dist <= 0.5
         ):
             sniper = "YES"
 
-        # --- FINAL DECISION OVERRIDE ---
-        if rr < 1.5 or risk <= 0:
-            decision = "PASS"
-            sniper = "NO"
-            action = "PASS"
-
         # --- GRADE ---
-        if score >= 9 and sniper == "YES":
-            grade = "A+"
-        elif score == 8 and sniper == "YES":
-            grade = "A"
-        elif score == 7:
-            grade = "B"
-        elif score == 6:
-            grade = "C"
-        else:
-            grade = "F"
+        grade = get_grade(score, sniper)
 
         # --- REASON TEXT ---
-        if status == "Extended":
-            reason = f"Price is {round(dist, 2)}% above previous high. Extended."
-        elif status == "Breakout Triggered":
-            reason = f"Breakout triggered. RR {round(rr, 2)}. Score {score}/10."
-        elif status == "Breakout Watch":
-            reason = "Near breakout level. Watching for move."
-        elif status == "Pullback":
-            reason = "Pullback setup forming. Waiting confirmation."
-        else:
-            reason = "No clean setup."
+        reason = build_reason(
+            status=status,
+            decision=decision,
+            action=action,
+            rr=rr,
+            score=score,
+            dist=dist,
+            blockers=blockers,
+        )
 
         return {
             "symbol": symbol,
@@ -213,11 +283,6 @@ def get_stock_data(symbol):
 
 
 def is_focus_candidate(stock):
-    """
-    A focus candidate is a setup that may deserve attention right now.
-    This stays strict on purpose.
-    """
-
     return (
         stock.get("decision") == "TRADE"
         and stock.get("sniper") == "YES"
@@ -250,16 +315,6 @@ def grade_priority(stock):
 
 
 def scanner_sort_key(stock):
-    """
-    Sort order:
-    1. Sniper-ready TRADE setups first
-    2. TRADE before WATCH before PASS
-    3. Better grades first
-    4. Higher scores first
-    5. Better risk/reward first
-    6. Closest clean breakout distance first
-    """
-
     focus_bonus = 0 if is_focus_candidate(stock) else 1
 
     return (
@@ -274,11 +329,6 @@ def scanner_sort_key(stock):
 
 
 def add_focus_labels(stocks):
-    """
-    Marks only the top 1–2 strict trade candidates.
-    If there are no clean sniper TRADE setups, nothing gets a focus badge.
-    """
-
     focus_candidates = [stock for stock in stocks if is_focus_candidate(stock)]
 
     for index, stock in enumerate(focus_candidates[:2], start=1):
