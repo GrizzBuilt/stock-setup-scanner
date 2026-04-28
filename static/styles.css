@@ -6,6 +6,8 @@ Main changes:
 - Improved phone usability for Render deployment
 - Added sticky filters on mobile
 - Preserved desktop table layout
+- Added true collapsed mobile cards
+- Mobile cards now show quick overview first, details on expand
 */
 
 body {
@@ -286,6 +288,49 @@ td {
     padding: 6px 10px;
 }
 
+/* Collapsible detail rows */
+
+.details-row {
+    display: none;
+}
+
+.details-row.open {
+    display: table-row;
+}
+
+.details-content {
+    background: #111827;
+    border: 1px solid #374151;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+.details-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.details-grid div {
+    background: #1f2937;
+    border: 1px solid #374151;
+    border-radius: 10px;
+    padding: 10px;
+}
+
+.details-grid span {
+    display: block;
+    color: #9ca3af;
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+}
+
+.expand-btn {
+    background: #374151;
+    padding: 6px 10px;
+}
+
 /* Mobile layout */
 
 @media (max-width: 768px) {
@@ -451,59 +496,73 @@ td {
     .action-too-late-extended {
         border-color: rgba(248, 113, 113, 0.45);
     }
-}
-/* Collapsible detail rows */
 
-.details-row {
-    display: none;
-}
+    /*
+        Mobile quick overview:
+        Hide the less important fields from the collapsed main card.
+        These deeper fields are shown in the expandable details section.
+    */
 
-.details-row.open {
-    display: table-row;
-}
+    .main-row td[data-label="Sniper"],
+    .main-row td[data-label="Grade"],
+    .main-row td[data-label="Action"],
+    .main-row td[data-label="Price"],
+    .main-row td[data-label="Change"],
+    .main-row td[data-label="Dist %"],
+    .main-row td[data-label="R/R"] {
+        display: none;
+    }
 
-.details-content {
-    background: #111827;
-    border: 1px solid #374151;
-    border-radius: 12px;
-    padding: 14px;
-}
+    /*
+        Keep only the quick decision fields visible.
+    */
 
-.details-grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(120px, 1fr));
-    gap: 10px;
-    margin-bottom: 12px;
-}
+    .main-row td[data-label="Symbol"],
+    .main-row td[data-label="Decision"],
+    .main-row td[data-label="Score"],
+    .main-row td[data-label="Status"],
+    .main-row td[data-label="Details"] {
+        display: flex;
+    }
 
-.details-grid div {
-    background: #1f2937;
-    border: 1px solid #374151;
-    border-radius: 10px;
-    padding: 10px;
-}
-
-.details-grid span {
-    display: block;
-    color: #9ca3af;
-    font-size: 0.8rem;
-    margin-bottom: 4px;
-}
-
-.expand-btn {
-    background: #374151;
-    padding: 6px 10px;
-}
-
-@media (max-width: 768px) {
-    .details-row.open {
+    .main-row td[data-label="Symbol"] {
         display: block;
     }
 
+    .main-row td[data-label="Details"] {
+        justify-content: center;
+        padding-top: 12px;
+    }
+
+    .expand-btn {
+        width: 100%;
+        font-size: 1.1rem;
+        padding: 10px 12px;
+    }
+
+    .expand-btn::after {
+        content: " Details";
+        font-size: 0.95rem;
+    }
+
+    /*
+        Mobile detail row behavior.
+        This overrides the block table layout so details stay closed
+        until JavaScript adds the .open class.
+    */
+
     .details-row {
+        display: none !important;
         padding: 0;
         margin-top: -12px;
         margin-bottom: 14px;
+        background: transparent;
+        border-top: none;
+        border-radius: 0 0 16px 16px;
+    }
+
+    .details-row.open {
+        display: block !important;
     }
 
     .details-row td {
@@ -527,6 +586,10 @@ td {
 
     .main-row {
         margin-bottom: 0;
+        border-radius: 16px;
+    }
+
+    .main-row:has(+ .details-row.open) {
         border-radius: 16px 16px 0 0;
     }
 }

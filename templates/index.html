@@ -4,6 +4,7 @@ Purpose: Stock Setup Scanner dashboard UI
 Main changes:
 - Keeps current table-based layout
 - Adds collapsible detail rows
+- Forces all detail rows collapsed on page load
 - Shows quick overview first
 - Expands to show Entry, Stop, Target, Reason, and Remove button
 -->
@@ -143,7 +144,9 @@ Main changes:
                             </td>
 
                             <td data-label="Details">
-                                <button type="button" class="expand-btn">+</button>
+                                <button type="button" class="expand-btn" aria-label="Expand {{ stock.symbol }} details">
+                                    +
+                                </button>
                             </td>
                         </tr>
 
@@ -198,11 +201,55 @@ Main changes:
         const sniperOnly = document.getElementById("sniperOnly");
         const mainRows = document.querySelectorAll(".main-row");
 
+        /*
+            Force all detail rows to start collapsed.
+
+            This fixes mobile layouts where .details-row may appear open by default
+            because CSS turns table rows into card-style blocks.
+        */
+        document.querySelectorAll(".details-row").forEach(function (detailsRow) {
+            detailsRow.classList.remove("open");
+            detailsRow.style.display = "none";
+        });
+
+        function getOpenDisplayValue() {
+            return window.innerWidth <= 768 ? "block" : "table-row";
+        }
+
+        function closeDetails(row) {
+            const detailsRow = row.nextElementSibling;
+            const button = row.querySelector(".expand-btn");
+
+            if (detailsRow) {
+                detailsRow.classList.remove("open");
+                detailsRow.style.display = "none";
+            }
+
+            if (button) {
+                button.textContent = "+";
+                button.setAttribute("aria-expanded", "false");
+            }
+        }
+
+        function openDetails(row) {
+            const detailsRow = row.nextElementSibling;
+            const button = row.querySelector(".expand-btn");
+
+            if (detailsRow) {
+                detailsRow.classList.add("open");
+                detailsRow.style.display = getOpenDisplayValue();
+            }
+
+            if (button) {
+                button.textContent = "−";
+                button.setAttribute("aria-expanded", "true");
+            }
+        }
+
         function applyFilters() {
             mainRows.forEach(function (row) {
                 const decision = row.dataset.decision;
                 const sniper = row.dataset.sniper;
-                const detailsRow = row.nextElementSibling;
 
                 const passesTrade = !tradeOnly.checked || decision === "TRADE";
                 const passesWatch = !watchOnly.checked || decision === "WATCH";
@@ -212,19 +259,15 @@ Main changes:
 
                 row.style.display = shouldShow ? "" : "none";
 
-                if (!shouldShow && detailsRow) {
-                    detailsRow.style.display = "none";
-                    detailsRow.classList.remove("open");
-
-                    const button = row.querySelector(".expand-btn");
-                    if (button) {
-                        button.textContent = "+";
-                    }
+                if (!shouldShow) {
+                    closeDetails(row);
                 }
             });
         }
 
         document.querySelectorAll(".expand-btn").forEach(function (button) {
+            button.setAttribute("aria-expanded", "false");
+
             button.addEventListener("click", function () {
                 const row = button.closest("tr");
                 const detailsRow = row.nextElementSibling;
@@ -233,15 +276,19 @@ Main changes:
                     return;
                 }
 
-                detailsRow.classList.toggle("open");
+                const isOpen = detailsRow.classList.contains("open");
 
-                if (detailsRow.classList.contains("open")) {
-                    detailsRow.style.display = "";
-                    button.textContent = "−";
+                if (isOpen) {
+                    closeDetails(row);
                 } else {
-                    detailsRow.style.display = "none";
-                    button.textContent = "+";
+                    openDetails(row);
                 }
+            });
+        });
+
+        window.addEventListener("resize", function () {
+            document.querySelectorAll(".details-row.open").forEach(function (detailsRow) {
+                detailsRow.style.display = getOpenDisplayValue();
             });
         });
 
