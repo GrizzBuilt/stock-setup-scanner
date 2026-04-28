@@ -2,9 +2,10 @@
 File: static/styles.css
 Purpose: Stock Setup Scanner dashboard styling
 Main changes:
-- Added colors for TRADE / WATCH / PASS
-- Added Sniper, Grade, Action, Risk/Reward, and Extended styling
-- Added stronger row highlights for ready-now setups
+- Added responsive mobile card layout
+- Improved phone usability for Render deployment
+- Added sticky filters on mobile
+- Preserved desktop table layout
 */
 
 body {
@@ -116,6 +117,10 @@ td {
 
 .score {
     font-weight: bold;
+}
+
+.symbol-cell {
+    font-size: 1rem;
 }
 
 /* Pills */
@@ -280,40 +285,170 @@ td {
     background: #374151;
     padding: 6px 10px;
 }
-/* Focus ranking */
 
-.focus-row {
-    position: relative;
-}
+/* Mobile layout */
 
-.focus-rank-1 {
-    background: rgba(74, 222, 128, 0.18);
-    box-shadow:
-        inset 6px 0 0 #4ade80,
-        0 0 0 1px rgba(74, 222, 128, 0.35);
-}
+@media (max-width: 768px) {
+    .page {
+        padding: 18px 10px;
+    }
 
-.focus-rank-2 {
-    background: rgba(96, 165, 250, 0.13);
-    box-shadow:
-        inset 6px 0 0 #60a5fa,
-        0 0 0 1px rgba(96, 165, 250, 0.25);
-}
+    h1 {
+        font-size: 1.65rem;
+        line-height: 1.15;
+    }
 
-.focus-pill {
-    letter-spacing: 0.03em;
-}
+    .subtitle {
+        font-size: 0.95rem;
+        line-height: 1.35;
+    }
 
-.focus-pill.focus-rank-1 {
-    background: rgba(74, 222, 128, 0.25);
-    color: #4ade80;
-}
+    .summary-row {
+        margin-bottom: 12px;
+    }
 
-.focus-pill.focus-rank-2 {
-    background: rgba(96, 165, 250, 0.22);
-    color: #93c5fd;
-}
+    .add-form {
+        flex-direction: column;
+        gap: 10px;
+    }
 
-.muted {
-    color: #6b7280;
+    .add-form input,
+    .add-form button {
+        width: 100%;
+        font-size: 1rem;
+    }
+
+    .filter-row {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: rgba(17, 24, 39, 0.96);
+        backdrop-filter: blur(8px);
+        border: 1px solid #374151;
+        border-radius: 12px;
+        padding: 10px;
+        gap: 10px;
+    }
+
+    .filter-row label {
+        flex: 1 1 100%;
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 10px;
+        padding: 10px;
+    }
+
+    .card {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        overflow-x: visible;
+    }
+
+    table,
+    thead,
+    tbody,
+    th,
+    td,
+    tr {
+        display: block;
+    }
+
+    thead {
+        display: none;
+    }
+
+    tbody {
+        display: grid;
+        gap: 14px;
+    }
+
+    tr {
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 16px;
+        padding: 14px;
+        overflow: hidden;
+    }
+
+    td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        border-bottom: 1px solid rgba(55, 65, 81, 0.7);
+        padding: 9px 0;
+        white-space: normal;
+        font-size: 0.95rem;
+    }
+
+    td:last-child {
+        border-bottom: none;
+    }
+
+    td::before {
+        content: attr(data-label);
+        color: #9ca3af;
+        font-weight: bold;
+        flex: 0 0 auto;
+        min-width: 84px;
+    }
+
+    .symbol-cell {
+        font-size: 1.4rem;
+        padding-top: 0;
+    }
+
+    .symbol-cell::before {
+        content: "";
+        display: none;
+    }
+
+    .reason-cell {
+        display: block;
+        min-width: 0;
+        line-height: 1.4;
+    }
+
+    .reason-cell::before {
+        content: attr(data-label);
+        display: block;
+        margin-bottom: 6px;
+        color: #9ca3af;
+        font-weight: bold;
+    }
+
+    .pill {
+        font-size: 0.82rem;
+        padding: 6px 10px;
+    }
+
+    .remove-btn {
+        width: 100%;
+        margin-top: 4px;
+    }
+
+    .action-ready-now,
+    .action-watch-for-break,
+    .action-wait-for-pullback,
+    .action-too-late-extended {
+        box-shadow: inset 5px 0 0 currentColor;
+    }
+
+    .action-ready-now {
+        border-color: rgba(74, 222, 128, 0.45);
+    }
+
+    .action-watch-for-break {
+        border-color: rgba(251, 191, 36, 0.45);
+    }
+
+    .action-wait-for-pullback {
+        border-color: rgba(96, 165, 250, 0.45);
+    }
+
+    .action-too-late-extended {
+        border-color: rgba(248, 113, 113, 0.45);
+    }
 }
