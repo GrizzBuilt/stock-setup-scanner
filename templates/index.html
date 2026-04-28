@@ -5,6 +5,7 @@ Main changes:
 - Added Sniper, Action, Grade, Risk/Reward, and Reason columns
 - Updated filters to use decision/action/status
 - Added clear visual decision labels
+- Preserves filter checkbox settings during auto refresh
 -->
 
 <!DOCTYPE html>
@@ -146,12 +147,55 @@ Main changes:
     </main>
 
     <script>
+        /*
+         * File: templates/index.html
+         * Purpose: Preserve scanner filters across auto refreshes
+         */
+
+        const FILTER_STORAGE_KEY = "stockSetupScannerFilters";
+
         const tradeOnly = document.getElementById("tradeOnly");
         const watchOnly = document.getElementById("watchOnly");
         const sniperOnly = document.getElementById("sniperOnly");
-        const rows = document.querySelectorAll("tbody tr");
+
+        function getRows() {
+            return document.querySelectorAll("tbody tr");
+        }
+
+        function getFilterState() {
+            return {
+                tradeOnly: tradeOnly.checked,
+                watchOnly: watchOnly.checked,
+                sniperOnly: sniperOnly.checked,
+            };
+        }
+
+        function saveFilterState() {
+            const filterState = getFilterState();
+            localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filterState));
+        }
+
+        function loadFilterState() {
+            const savedFilterState = localStorage.getItem(FILTER_STORAGE_KEY);
+
+            if (!savedFilterState) {
+                return;
+            }
+
+            try {
+                const filterState = JSON.parse(savedFilterState);
+
+                tradeOnly.checked = Boolean(filterState.tradeOnly);
+                watchOnly.checked = Boolean(filterState.watchOnly);
+                sniperOnly.checked = Boolean(filterState.sniperOnly);
+            } catch (error) {
+                console.warn("Could not load saved scanner filters:", error);
+            }
+        }
 
         function applyFilters() {
+            const rows = getRows();
+
             rows.forEach(function (row) {
                 const decision = row.dataset.decision;
                 const sniper = row.dataset.sniper;
@@ -165,11 +209,20 @@ Main changes:
             });
         }
 
-        tradeOnly.addEventListener("change", applyFilters);
-        watchOnly.addEventListener("change", applyFilters);
-        sniperOnly.addEventListener("change", applyFilters);
+        function handleFilterChange() {
+            saveFilterState();
+            applyFilters();
+        }
+
+        tradeOnly.addEventListener("change", handleFilterChange);
+        watchOnly.addEventListener("change", handleFilterChange);
+        sniperOnly.addEventListener("change", handleFilterChange);
+
+        loadFilterState();
+        applyFilters();
 
         setInterval(function () {
+            saveFilterState();
             window.location.reload();
         }, 30000);
     </script>
