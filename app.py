@@ -339,22 +339,22 @@ def build_position_verdict(
     elif -0.50 < pl_per_share <= 0:
         verdict = "NEEDS RECLAIM — WATCH TIGHT"
         management = (
-            "Price is below your actual entry. It needs to reclaim quickly. "
-            "Do not average down."
+            "Price is below your actual entry. It needs to reclaim your entry soon. "
+            "Do not average down and do not let a small red trade become a big one."
         )
 
     elif -1.00 < pl_per_share <= -0.50:
-        verdict = "DANGER — CUT IF NO FAST RECLAIM"
+        verdict = "BELOW CUT ZONE — NEEDS FAST RECLAIM"
         management = (
-            "Loss is beyond the normal small-account comfort zone. "
-            "If it cannot reclaim quickly, cut it."
+            "Price is below your planned cut zone. If it cannot reclaim quickly, "
+            "cut the trade and protect the account."
         )
 
     else:
         verdict = "CUT NOW — LOSS TOO BIG"
         management = (
             "The trade has moved too far against your actual entry. "
-            "Protect the account. Do not hope."
+            "Protect the account. Do not hope and do not average down."
         )
 
     return {
