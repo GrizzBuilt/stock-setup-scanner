@@ -1,8 +1,9 @@
 # File: app.py
 # Purpose: Flask stock scanner with setup scoring, Sniper Mode,
-# entry-gap chase protection, and SQLite Active Position Mode.
+# entry-gap chase protection, SQLite Active Position Mode,
+# and earnings/event-risk protection.
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from flask import Flask, render_template, request, redirect, url_for
@@ -21,6 +22,12 @@ from db import (
 
 app = Flask(__name__)
 
+EASTERN = ZoneInfo("America/New_York")
+
+# Simple in-memory cache so we do not hammer yfinance every page refresh.
+# Resets when the Flask app restarts.
+EARNINGS_CACHE = {}
+
 
 def add_empty_position_fields(stock):
     stock.update(
@@ -38,6 +45,23 @@ def add_empty_position_fields(stock):
             "cut_level": "",
             "position_verdict": "",
             "position_management": "",
+        }
+    )
+
+    return stock
+
+
+def add_empty_event_fields(stock):
+    stock.update(
+        {
+            "event_risk": "NO",
+            "event_risk_level": "NONE",
+            "event_warning": "",
+            "earnings_date": "",
+            "base_decision": stock.get("decision", ""),
+            "base_action": stock.get("action", ""),
+            "base_sniper": stock.get("sniper", ""),
+            "base_grade": stock.get("grade", ""),
         }
     )
 
@@ -72,6 +96,7 @@ def empty_stock(symbol, message="No data"):
         "reason": message,
     }
 
+    stock = add_empty_event_fields(stock)
     return add_empty_position_fields(stock)
 
 
@@ -107,7 +132,7 @@ def get_confidence(decision, action, sniper, score, rr, status, entry_gap):
     ):
         return "MEDIUM"
 
-    if decision == "WATCH" and status in ["Breakout Watch", "Pullback"]:
+    if decision == "WATCH" and status in ["Breakout Watch", "Pullback", "Breakout Triggered"]:
         return "LOW"
 
     return "NONE"
@@ -138,6 +163,12 @@ def build_management(
     entry_gap,
     entry_warning,
 ):
+    if action == "EARNINGS WATCH":
+        return (
+            "Earnings/event risk is active. Technical setup may be strong, but price can move fast "
+            "or gap after hours. Treat as WATCH ONLY unless you intentionally want event risk."
+        )
+
     if action == "WAIT FOR RESET":
         return (
             "Price is too far above the scanner entry. Do not chase. "
@@ -179,6 +210,9 @@ def build_management(
 
 
 def build_verdict(decision, action, sniper, confidence, trade_style, status, entry_warning):
+    if action == "EARNINGS WATCH":
+        return "EARNINGS RISK — WATCH ONLY"
+
     if action == "WAIT FOR RESET":
         return "DO NOT CHASE — WAIT FOR RESET"
 
@@ -222,6 +256,13 @@ def build_reason(
         blocker_text = " Blocker: " + "; ".join(blockers) + "."
 
     prefix = f"{trade_style}. Confidence: {confidence}. Entry: {entry_warning}."
+
+    if action == "EARNINGS WATCH":
+        return (
+            f"{prefix} Technical setup may be valid, but earnings/event risk is active. "
+            f"Scanner downgraded this to WATCH ONLY. RR {round(rr, 2)}. Score {score}/10."
+            f"{blocker_text}"
+        )
 
     if action == "WAIT FOR RESET":
         return (
@@ -281,6 +322,230 @@ def get_entry_warning(entry_gap):
         return "LATE ENTRY / QUICK TRADE ONLY"
 
     return "DO NOT CHASE"
+
+
+def normalize_earnings_date(value):
+    """
+    Tries to normalize yfinance earnings date values into a plain date.
+    yfinance can return different shapes depending on ticker/data availability.
+    """
+    if value is None:
+        return None
+
+    try:
+        # Lists/tuples often happen with earnings date ranges.
+        if isinstance(value, (list, tuple)) and value:
+            value = value[0]
+
+        # Pandas Timestamp has to_pydatetime().
+        if hasattr(value, "to_pydatetime"):
+            value = value.to_pydatetime()
+
+        # Python datetime.
+        if isinstance(value, datetime):
+            return value.astimezone(EASTERN).date() if value.tzinfo else value.date()
+
+        # Python date-like object.
+        if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+            return datetime(value.year, value.month, value.day).date()
+
+        # String fallback.
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                return None
+
+            # Try ISO-ish date first.
+            try:
+                return datetime.fromisoformat(cleaned.replace("Z", "+00:00")).date()
+            except Exception:
+                pass
+
+            # Try common date-only fallback.
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
+                try:
+                    return datetime.strptime(cleaned, fmt).date()
+                except Exception:
+                    continue
+
+    except Exception:
+        return None
+
+    return None
+
+
+def extract_earnings_date_from_calendar(calendar):
+    """
+    Handles common yfinance calendar shapes:
+    - dict with 'Earnings Date'
+    - pandas DataFrame-like object
+    - Series-like object
+    """
+    if calendar is None:
+        return None
+
+    possible_keys = [
+        "Earnings Date",
+        "EarningsDate",
+        "earningsDate",
+        "Earnings",
+    ]
+
+    # Dict-style.
+    if isinstance(calendar, dict):
+        for key in possible_keys:
+            if key in calendar:
+                earnings_date = normalize_earnings_date(calendar.get(key))
+                if earnings_date:
+                    return earnings_date
+
+    # DataFrame/Series-style.
+    try:
+        # Some versions behave like a DataFrame with index labels.
+        for key in possible_keys:
+            if hasattr(calendar, "loc"):
+                try:
+                    value = calendar.loc[key]
+                    earnings_date = normalize_earnings_date(value)
+                    if earnings_date:
+                        return earnings_date
+                except Exception:
+                    pass
+
+            if hasattr(calendar, "get"):
+                try:
+                    value = calendar.get(key)
+                    earnings_date = normalize_earnings_date(value)
+                    if earnings_date:
+                        return earnings_date
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return None
+
+
+def get_earnings_info(symbol):
+    """
+    Returns earnings risk info for a symbol.
+
+    Risk levels:
+    - HIGH: earnings date is today
+    - MEDIUM: earnings date is tomorrow
+    - NONE: no near-term earnings detected
+
+    NOTE:
+    yfinance earnings dates can be missing or occasionally unavailable.
+    If unavailable, scanner should keep working and simply show no event warning.
+    """
+    now = datetime.now(EASTERN)
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
+
+    cache_key = f"{symbol.upper()}-{today.isoformat()}-{now.hour}"
+
+    if cache_key in EARNINGS_CACHE:
+        return EARNINGS_CACHE[cache_key]
+
+    info = {
+        "event_risk": "NO",
+        "event_risk_level": "NONE",
+        "event_warning": "",
+        "earnings_date": "",
+    }
+
+    try:
+        ticker = yf.Ticker(symbol)
+        calendar = getattr(ticker, "calendar", None)
+        earnings_date = extract_earnings_date_from_calendar(calendar)
+
+        if not earnings_date:
+            EARNINGS_CACHE[cache_key] = info
+            return info
+
+        info["earnings_date"] = earnings_date.strftime("%m/%d/%Y")
+
+        if earnings_date == today:
+            info["event_risk"] = "YES"
+            info["event_risk_level"] = "HIGH"
+
+            if now.hour < 16:
+                info["event_warning"] = (
+                    "EARNINGS TODAY — likely after-hours risk. "
+                    "Technical setups can fail fast."
+                )
+            else:
+                info["event_warning"] = (
+                    "EARNINGS TODAY — after-hours reaction risk is active. "
+                    "Fractional shares may be hard to exit after close."
+                )
+
+        elif earnings_date == tomorrow:
+            info["event_risk"] = "YES"
+            info["event_risk_level"] = "MEDIUM"
+            info["event_warning"] = (
+                "EARNINGS TOMORROW — upcoming event risk. "
+                "Use smaller size or wait."
+            )
+
+    except Exception:
+        # Do not let earnings lookup break the scanner.
+        pass
+
+    EARNINGS_CACHE[cache_key] = info
+    return info
+
+
+def apply_event_risk_filter(stock, earnings_info):
+    """
+    Keeps the technical grade visible, but blocks A+ Sniper / READY NOW
+    when earnings/event risk is active.
+    """
+    stock = add_empty_event_fields(stock)
+
+    stock["event_risk"] = earnings_info.get("event_risk", "NO")
+    stock["event_risk_level"] = earnings_info.get("event_risk_level", "NONE")
+    stock["event_warning"] = earnings_info.get("event_warning", "")
+    stock["earnings_date"] = earnings_info.get("earnings_date", "")
+
+    if stock["event_risk"] != "YES":
+        return stock
+
+    # Save what the scanner originally saw before downgrading.
+    stock["base_decision"] = stock.get("decision", "")
+    stock["base_action"] = stock.get("action", "")
+    stock["base_sniper"] = stock.get("sniper", "")
+    stock["base_grade"] = stock.get("grade", "")
+
+    warning = stock["event_warning"]
+
+    # If it was a trade, downgrade it.
+    if stock.get("decision") == "TRADE" or stock.get("sniper") == "YES":
+        stock["decision"] = "WATCH"
+        stock["action"] = "EARNINGS WATCH"
+        stock["sniper"] = "NO"
+        stock["confidence"] = "LOW"
+        stock["trade_style"] = "WATCH ONLY"
+        stock["verdict"] = "EARNINGS RISK — WATCH ONLY"
+        stock["management"] = (
+            f"{warning} The setup may still be technically strong, "
+            "but this is no longer a clean scanner trade. "
+            "Only take it if you intentionally accept event risk."
+        )
+        stock["reason"] = (
+            f"{warning} Original signal was {stock['base_grade']} / "
+            f"{stock['base_decision']} / {stock['base_action']} / "
+            f"Sniper {stock['base_sniper']}. Downgraded to WATCH ONLY because earnings can cause "
+            "fake breakouts, fast reversals, or after-hours gaps."
+        )
+        return stock
+
+    # If it was already watch/pass, just add warning to the reason.
+    stock["reason"] = f"{warning} {stock.get('reason', '')}".strip()
+    stock["management"] = f"{warning} {stock.get('management', '')}".strip()
+
+    return stock
 
 
 def build_position_verdict(
@@ -717,6 +982,11 @@ def get_stock_data(symbol):
             "reason": reason,
         }
 
+        stock = add_empty_event_fields(stock)
+
+        earnings_info = get_earnings_info(symbol)
+        stock = apply_event_risk_filter(stock, earnings_info)
+
         return add_empty_position_fields(stock)
 
     except Exception as e:
@@ -731,6 +1001,7 @@ def is_focus_candidate(stock):
         and stock.get("rr", 0) >= 1.5
         and stock.get("status") != "Extended"
         and stock.get("entry_gap", 999) <= 1.00
+        and stock.get("event_risk") != "YES"
     )
 
 
@@ -758,13 +1029,14 @@ def confidence_priority(stock):
 def action_priority(stock):
     priorities = {
         "READY NOW": 0,
-        "WATCH FOR BREAK": 1,
-        "WAIT FOR BOUNCE": 2,
-        "CHECK SETUP": 3,
-        "WAIT": 4,
-        "WAIT FOR RESET": 5,
-        "TOO LATE / EXTENDED": 6,
-        "PASS": 7,
+        "EARNINGS WATCH": 1,
+        "WATCH FOR BREAK": 2,
+        "WAIT FOR BOUNCE": 3,
+        "CHECK SETUP": 4,
+        "WAIT": 5,
+        "WAIT FOR RESET": 6,
+        "TOO LATE / EXTENDED": 7,
+        "PASS": 8,
     }
 
     return priorities.get(stock.get("action"), 9)
@@ -782,6 +1054,16 @@ def grade_priority(stock):
     return priorities.get(stock.get("grade"), 9)
 
 
+def event_risk_priority(stock):
+    priorities = {
+        "NONE": 0,
+        "MEDIUM": 1,
+        "HIGH": 2,
+    }
+
+    return priorities.get(stock.get("event_risk_level"), 9)
+
+
 def scanner_sort_key(stock):
     active_bonus = 0 if stock.get("is_active_position") else 1
     focus_bonus = 0 if is_focus_candidate(stock) else 1
@@ -790,6 +1072,7 @@ def scanner_sort_key(stock):
         active_bonus,
         focus_bonus,
         decision_priority(stock),
+        event_risk_priority(stock),
         confidence_priority(stock),
         action_priority(stock),
         grade_priority(stock),
@@ -829,7 +1112,7 @@ def home():
         "index.html",
         stocks=stocks,
         active_position=active_position,
-        last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
+        last_updated=datetime.now(EASTERN).strftime("%I:%M:%S %p"),
     )
 
 
