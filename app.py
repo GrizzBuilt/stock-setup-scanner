@@ -1,30 +1,6 @@
 # File: app.py
-# Purpose: Main Flask app + upgraded trading logic engine
-# Changes:
-# - Added Sniper Mode
-# - Added Action field
-# - Added Risk/Reward calculation
-# - Added Score + Grade system
-# - Improved breakout + pullback classification
-# - Added reasoning text for decisions
-# - Added Focus Rank so the best 1–2 actionable setups rise to the top
-# - Fixed decision override so WATCH setups are not automatically forced to PASS
-# - Updated pullback wording:
-#   - "WAIT FOR PULLBACK" is now "WAIT FOR BOUNCE"
-#   - Reason text now says "Waiting for bounce confirmation"
-# - Allowed clean pullback setups to become Sniper YES when confirmed by logic
-# - Cleaned up early action labels:
-#   - Early classification no longer sets READY NOW
-#   - READY NOW can only happen after final risk/reward + score filters pass
-# - Added clearer non-setup wording:
-#   - Status: Not Near Setup
-#   - Action: WAIT
-# - Added confidence + trade style fields to make decisions faster:
-#   - Confidence: HIGH / MEDIUM / LOW / NONE
-#   - Trade Style: SNIPER / QUICK TRADE / WATCH ONLY / AVOID
-#   - Management: plain-English in-trade guidance
-# - Added Verdict field:
-#   - One-line plain-English decision helper for faster judgment
+# Purpose: Flask stock scanner with breakout/pullback logic, Sniper Mode,
+# confidence, verdicts, and entry-gap chase protection.
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -58,6 +34,9 @@ def empty_stock(symbol, message="No data"):
         "entry": "—",
         "stop": "—",
         "target": "—",
+        "entry_gap": 0,
+        "entry_gap_pct": 0,
+        "entry_warning": "NO DATA",
         "focus_rank": "",
         "focus_label": "",
         "reason": message,
@@ -76,13 +55,14 @@ def get_grade(score):
     return "F"
 
 
-def get_confidence(decision, action, sniper, score, rr, status):
+def get_confidence(decision, action, sniper, score, rr, status, entry_gap):
     if (
         decision == "TRADE"
         and action == "READY NOW"
         and sniper == "YES"
         and score >= 8
         and rr >= 1.5
+        and entry_gap <= 0.50
     ):
         return "HIGH"
 
@@ -91,6 +71,7 @@ def get_confidence(decision, action, sniper, score, rr, status):
         and action == "READY NOW"
         and score >= 7
         and rr >= 1.5
+        and entry_gap <= 1.00
     ):
         return "MEDIUM"
 
@@ -113,7 +94,24 @@ def get_trade_style(decision, action, sniper, confidence):
     return "AVOID"
 
 
-def build_management(decision, action, sniper, confidence, trade_style, entry, stop, target):
+def build_management(
+    decision,
+    action,
+    sniper,
+    confidence,
+    trade_style,
+    entry,
+    stop,
+    target,
+    entry_gap,
+    entry_warning,
+):
+    if action == "WAIT FOR RESET":
+        return (
+            "Price is too far above the scanner entry. Do not chase. "
+            "Wait for price to reset closer to entry or form a fresh setup."
+        )
+
     if decision == "TRADE" and action == "READY NOW" and trade_style == "SNIPER":
         return (
             "SNIPER setup. You can take the trade if it matches your plan. "
@@ -123,7 +121,7 @@ def build_management(decision, action, sniper, confidence, trade_style, entry, s
 
     if decision == "TRADE" and action == "READY NOW" and trade_style == "QUICK TRADE":
         return (
-            "Valid trade, but not A+ Sniper. Treat it as a quick trade. "
+            "Valid trade, but entry is not perfect. Treat it as a quick trade. "
             "Take +$0.50 to +$1.00 if offered, protect entry fast, and do not expect a runner."
         )
 
@@ -148,7 +146,10 @@ def build_management(decision, action, sniper, confidence, trade_style, entry, s
     return "No trade. Wait for a cleaner setup."
 
 
-def build_verdict(decision, action, sniper, confidence, trade_style, status):
+def build_verdict(decision, action, sniper, confidence, trade_style, status, entry_warning):
+    if action == "WAIT FOR RESET":
+        return "DO NOT CHASE — WAIT FOR RESET"
+
     if decision == "TRADE" and action == "READY NOW" and sniper == "YES":
         return "A+ SETUP — TRAIL WITH CONFIDENCE"
 
@@ -170,13 +171,31 @@ def build_verdict(decision, action, sniper, confidence, trade_style, status):
     return "NO TRADE — PASS"
 
 
-def build_reason(status, decision, action, rr, score, dist, blockers, confidence, trade_style):
+def build_reason(
+    status,
+    decision,
+    action,
+    rr,
+    score,
+    dist,
+    blockers,
+    confidence,
+    trade_style,
+    entry_gap,
+    entry_warning,
+):
     blocker_text = ""
 
     if blockers:
         blocker_text = " Blocker: " + "; ".join(blockers) + "."
 
-    prefix = f"{trade_style}. Confidence: {confidence}."
+    prefix = f"{trade_style}. Confidence: {confidence}. Entry: {entry_warning}."
+
+    if action == "WAIT FOR RESET":
+        return (
+            f"{prefix} Price is ${round(entry_gap, 2)} above scanner entry. "
+            f"Wait for a reset instead of chasing.{blocker_text}"
+        )
 
     if status == "Extended":
         return f"{prefix} Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
@@ -219,6 +238,19 @@ def build_reason(status, decision, action, rr, score, dist, blockers, confidence
     return f"{prefix} No clean setup.{blocker_text}"
 
 
+def get_entry_warning(entry_gap):
+    if entry_gap <= 0.25:
+        return "IDEAL ENTRY ZONE"
+
+    if entry_gap <= 0.50:
+        return "STILL ACCEPTABLE"
+
+    if entry_gap <= 1.00:
+        return "LATE ENTRY / QUICK TRADE ONLY"
+
+    return "DO NOT CHASE"
+
+
 def get_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
@@ -241,9 +273,6 @@ def get_stock_data(symbol):
         percent = ((price - open_price) / open_price) * 100 if open_price else 0
         range_size = high - low
 
-        # --- DISTANCE FROM PREVIOUS HIGH ---
-        # Positive = price is above yesterday's high.
-        # Negative = price is still below yesterday's high.
         dist = ((price - prev_high) / prev_high) * 100
 
         status = "Not Near Setup"
@@ -254,11 +283,7 @@ def get_stock_data(symbol):
         stop = prev_low
         target = prev_high + range_size
 
-        # --- SETUP CLASSIFICATION ---
-        # Important:
-        # This section only classifies the setup.
-        # It does NOT give the final trading green light.
-        # READY NOW only happens later after score + risk/reward filters pass.
+        # Setup classification only. Final trade permission happens later.
         if -0.5 <= dist <= 0:
             status = "Breakout Watch"
             decision = "WATCH"
@@ -282,12 +307,14 @@ def get_stock_data(symbol):
             stop = low
             target = price + 3
 
-        # --- RISK / REWARD ---
         risk = entry - stop
         reward = target - entry
         rr = reward / risk if risk > 0 else 0
 
-        # --- SCORE ---
+        entry_gap = price - entry
+        entry_gap_pct = (entry_gap / entry) * 100 if entry else 0
+        entry_warning = get_entry_warning(entry_gap)
+
         score = 0
 
         if status in ["Breakout Watch", "Breakout Triggered", "Pullback"]:
@@ -318,7 +345,12 @@ def get_stock_data(symbol):
         if reward > 0:
             score += 1
 
-        # --- PENALTIES ---
+        if entry_gap > 0.50:
+            score -= 1
+
+        if entry_gap > 1.00:
+            score -= 2
+
         if status == "Extended":
             score -= 2
 
@@ -333,7 +365,6 @@ def get_stock_data(symbol):
 
         score = max(0, min(score, 10))
 
-        # --- BLOCKERS ---
         blockers = []
 
         if status == "Extended":
@@ -351,20 +382,33 @@ def get_stock_data(symbol):
         if status in ["Breakout Triggered", "Pullback"] and score < 7:
             blockers.append("score below trade quality")
 
-        # --- FINAL TRADE DECISION ---
-        # This is the only section allowed to set READY NOW.
+        if status in ["Breakout Triggered", "Pullback"] and entry_gap > 0.50:
+            blockers.append("late entry; price is more than $0.50 above scanner entry")
+
+        if status in ["Breakout Triggered", "Pullback"] and entry_gap > 1.00:
+            blockers.append("do not chase; price is more than $1.00 above scanner entry")
+
+        # Final trade decision. READY NOW can only happen here.
         if status == "Breakout Triggered":
             if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
-                decision = "TRADE"
-                action = "READY NOW"
+                if entry_gap <= 1.00:
+                    decision = "TRADE"
+                    action = "READY NOW"
+                else:
+                    decision = "WATCH"
+                    action = "WAIT FOR RESET"
             else:
                 decision = "PASS"
                 action = "PASS"
 
         elif status == "Pullback":
             if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
-                decision = "TRADE"
-                action = "READY NOW"
+                if entry_gap <= 1.00:
+                    decision = "TRADE"
+                    action = "READY NOW"
+                else:
+                    decision = "WATCH"
+                    action = "WAIT FOR RESET"
             else:
                 decision = "WATCH"
                 action = "WAIT FOR BOUNCE"
@@ -385,9 +429,6 @@ def get_stock_data(symbol):
             decision = "PASS"
             action = "PASS"
 
-        # --- SNIPER MODE ---
-        # Sniper is reserved for the cleanest A+ style setups.
-        # A setup can still be TRADE / READY NOW without being Sniper.
         sniper = "NO"
 
         clean_breakout_sniper = (
@@ -399,6 +440,7 @@ def get_stock_data(symbol):
             and reward > 0
             and rr >= 1.5
             and 0 < dist <= 0.5
+            and entry_gap <= 0.50
         )
 
         clean_pullback_sniper = (
@@ -411,12 +453,12 @@ def get_stock_data(symbol):
             and rr >= 1.5
             and price > open_price
             and price > stop
+            and entry_gap <= 0.50
         )
 
         if clean_breakout_sniper or clean_pullback_sniper:
             sniper = "YES"
 
-        # --- CONFIDENCE + MANAGEMENT ---
         grade = get_grade(score)
 
         confidence = get_confidence(
@@ -426,6 +468,7 @@ def get_stock_data(symbol):
             score=score,
             rr=rr,
             status=status,
+            entry_gap=entry_gap,
         )
 
         trade_style = get_trade_style(
@@ -444,6 +487,8 @@ def get_stock_data(symbol):
             entry=entry,
             stop=stop,
             target=target,
+            entry_gap=entry_gap,
+            entry_warning=entry_warning,
         )
 
         verdict = build_verdict(
@@ -453,9 +498,9 @@ def get_stock_data(symbol):
             confidence=confidence,
             trade_style=trade_style,
             status=status,
+            entry_warning=entry_warning,
         )
 
-        # --- REASON TEXT ---
         reason = build_reason(
             status=status,
             decision=decision,
@@ -466,6 +511,8 @@ def get_stock_data(symbol):
             blockers=blockers,
             confidence=confidence,
             trade_style=trade_style,
+            entry_gap=entry_gap,
+            entry_warning=entry_warning,
         )
 
         return {
@@ -487,6 +534,9 @@ def get_stock_data(symbol):
             "entry": round(entry, 2),
             "stop": round(stop, 2),
             "target": round(target, 2),
+            "entry_gap": round(entry_gap, 2),
+            "entry_gap_pct": round(entry_gap_pct, 2),
+            "entry_warning": entry_warning,
             "focus_rank": "",
             "focus_label": "",
             "reason": reason,
@@ -503,6 +553,7 @@ def is_focus_candidate(stock):
         and stock.get("score", 0) >= 7
         and stock.get("rr", 0) >= 1.5
         and stock.get("status") != "Extended"
+        and stock.get("entry_gap", 999) <= 1.00
     )
 
 
@@ -534,8 +585,9 @@ def action_priority(stock):
         "WAIT FOR BOUNCE": 2,
         "CHECK SETUP": 3,
         "WAIT": 4,
-        "TOO LATE / EXTENDED": 5,
-        "PASS": 6,
+        "WAIT FOR RESET": 5,
+        "TOO LATE / EXTENDED": 6,
+        "PASS": 7,
     }
 
     return priorities.get(stock.get("action"), 9)
