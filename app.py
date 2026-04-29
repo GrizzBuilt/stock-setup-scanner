@@ -23,12 +23,8 @@
 #   - Confidence: HIGH / MEDIUM / LOW / NONE
 #   - Trade Style: SNIPER / QUICK TRADE / WATCH ONLY / AVOID
 #   - Management: plain-English in-trade guidance
-# - Updated Grade logic so score and grade feel more natural:
-#   - 9–10 = A+
-#   - 8 = A
-#   - 7 = B
-#   - 6 = C
-#   - 0–5 = F
+# - Added Verdict field:
+#   - One-line plain-English decision helper for faster judgment
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -56,6 +52,7 @@ def empty_stock(symbol, message="No data"):
         "confidence": "NONE",
         "trade_style": "AVOID",
         "management": "No trade. Wait for a cleaner setup.",
+        "verdict": "NO TRADE — PASS",
         "rr": 0,
         "distance": 0,
         "entry": "—",
@@ -80,10 +77,21 @@ def get_grade(score):
 
 
 def get_confidence(decision, action, sniper, score, rr, status):
-    if decision == "TRADE" and action == "READY NOW" and sniper == "YES" and score >= 8 and rr >= 1.5:
+    if (
+        decision == "TRADE"
+        and action == "READY NOW"
+        and sniper == "YES"
+        and score >= 8
+        and rr >= 1.5
+    ):
         return "HIGH"
 
-    if decision == "TRADE" and action == "READY NOW" and score >= 7 and rr >= 1.5:
+    if (
+        decision == "TRADE"
+        and action == "READY NOW"
+        and score >= 7
+        and rr >= 1.5
+    ):
         return "MEDIUM"
 
     if decision == "WATCH" and status in ["Breakout Watch", "Pullback"]:
@@ -132,16 +140,34 @@ def build_management(decision, action, sniper, confidence, trade_style, entry, s
         )
 
     if action == "TOO LATE / EXTENDED":
-        return (
-            "Too extended. Do not chase. Wait for a reset or pullback."
-        )
+        return "Too extended. Do not chase. Wait for a reset or pullback."
 
     if action == "WAIT":
-        return (
-            "Not near a clean setup. Keep it on watch, but do not force a trade."
-        )
+        return "Not near a clean setup. Keep it on watch, but do not force a trade."
 
     return "No trade. Wait for a cleaner setup."
+
+
+def build_verdict(decision, action, sniper, confidence, trade_style, status):
+    if decision == "TRADE" and action == "READY NOW" and sniper == "YES":
+        return "A+ SETUP — TRAIL WITH CONFIDENCE"
+
+    if decision == "TRADE" and action == "READY NOW" and trade_style == "QUICK TRADE":
+        return "VALID QUICK TRADE — TAKE $0.50–$1.00 IF OFFERED"
+
+    if action == "WATCH FOR BREAK":
+        return "WATCH ONLY — WAIT FOR BREAK"
+
+    if action == "WAIT FOR BOUNCE":
+        return "WATCH ONLY — WAIT FOR BOUNCE"
+
+    if action == "TOO LATE / EXTENDED":
+        return "DO NOT CHASE — WAIT FOR RESET"
+
+    if status == "Not Near Setup" or action == "WAIT":
+        return "NOT NEAR SETUP — WAIT"
+
+    return "NO TRADE — PASS"
 
 
 def build_reason(status, decision, action, rr, score, dist, blockers, confidence, trade_style):
@@ -161,10 +187,16 @@ def build_reason(status, decision, action, rr, score, dist, blockers, confidence
                 f"{prefix} Breakout triggered. RR {round(rr, 2)}. "
                 f"Score {score}/10. Trade is valid now, but manage based on trade style."
             )
-        return f"{prefix} Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        return (
+            f"{prefix} Breakout triggered, but not clean enough yet. "
+            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        )
 
     if status == "Breakout Watch":
-        return f"{prefix} Near breakout level. Watching for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        return (
+            f"{prefix} Near breakout level. Watching for breakout confirmation. "
+            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        )
 
     if status == "Pullback":
         if decision == "TRADE" and action == "READY NOW":
@@ -172,12 +204,16 @@ def build_reason(status, decision, action, rr, score, dist, blockers, confidence
                 f"{prefix} Pullback bounce confirmed. RR {round(rr, 2)}. "
                 f"Score {score}/10. Trade is valid now, but manage based on trade style."
             )
-        return f"{prefix} Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        return (
+            f"{prefix} Pullback setup forming. Waiting for bounce confirmation. "
+            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        )
 
     if status == "Not Near Setup":
         return (
             f"{prefix} Not close enough to a clean setup yet. "
-            f"Distance from previous high is {round(dist, 2)}%. RR {round(rr, 2)}. Score {score}/10."
+            f"Distance from previous high is {round(dist, 2)}%. "
+            f"RR {round(rr, 2)}. Score {score}/10."
         )
 
     return f"{prefix} No clean setup.{blocker_text}"
@@ -382,6 +418,7 @@ def get_stock_data(symbol):
 
         # --- CONFIDENCE + MANAGEMENT ---
         grade = get_grade(score)
+
         confidence = get_confidence(
             decision=decision,
             action=action,
@@ -390,12 +427,14 @@ def get_stock_data(symbol):
             rr=rr,
             status=status,
         )
+
         trade_style = get_trade_style(
             decision=decision,
             action=action,
             sniper=sniper,
             confidence=confidence,
         )
+
         management = build_management(
             decision=decision,
             action=action,
@@ -405,6 +444,15 @@ def get_stock_data(symbol):
             entry=entry,
             stop=stop,
             target=target,
+        )
+
+        verdict = build_verdict(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            confidence=confidence,
+            trade_style=trade_style,
+            status=status,
         )
 
         # --- REASON TEXT ---
@@ -433,6 +481,7 @@ def get_stock_data(symbol):
             "confidence": confidence,
             "trade_style": trade_style,
             "management": management,
+            "verdict": verdict,
             "rr": round(rr, 2) if rr else 0,
             "distance": round(dist, 2),
             "entry": round(entry, 2),
