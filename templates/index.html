@@ -8,7 +8,8 @@ Main changes:
 - Adds wrong-ticker warning when an active position exists
 - Adds scanner verdict, confidence, trade style, entry gap, and entry warning
 - Keeps collapsible detail rows
-- Forces all detail rows collapsed on page load
+- Keeps active position row expanded after auto-refresh
+- Reopens the last manually expanded row when no active position exists
 -->
 
 <!DOCTYPE html>
@@ -132,9 +133,11 @@ Main changes:
                                 {{ 'extended-row' if stock.status == 'Extended' else '' }}
                                 {{ 'active-position-row' if stock.is_active_position else '' }}
                             "
+                            data-symbol="{{ stock.symbol }}"
                             data-decision="{{ stock.decision }}"
                             data-sniper="{{ stock.sniper }}"
                             data-status="{{ stock.status }}"
+                            data-active="{{ 'YES' if stock.is_active_position else 'NO' }}"
                         >
                             <td data-label="Symbol" class="symbol-cell">
                                 <strong>{{ stock.symbol }}</strong>
@@ -216,8 +219,10 @@ Main changes:
 
                         <tr
                             class="details-row"
+                            data-symbol="{{ stock.symbol }}"
                             data-decision="{{ stock.decision }}"
                             data-sniper="{{ stock.sniper }}"
+                            data-active="{{ 'YES' if stock.is_active_position else 'NO' }}"
                         >
                             <td colspan="12">
                                 <div class="details-content">
@@ -363,22 +368,17 @@ Main changes:
         const sniperOnly = document.getElementById("sniperOnly");
         const mainRows = document.querySelectorAll(".main-row");
 
-        /*
-            Force all detail rows to start collapsed.
-
-            This fixes mobile layouts where .details-row may appear open by default
-            because CSS turns table rows into card-style blocks.
-        */
-        document.querySelectorAll(".details-row").forEach(function (detailsRow) {
-            detailsRow.classList.remove("open");
-            detailsRow.style.display = "none";
-        });
+        const OPEN_SYMBOL_KEY = "stockScannerOpenSymbol";
 
         function getOpenDisplayValue() {
             return window.innerWidth <= 768 ? "block" : "table-row";
         }
 
-        function closeDetails(row) {
+        function getRowSymbol(row) {
+            return row.dataset.symbol || "";
+        }
+
+        function closeDetails(row, shouldForget = true) {
             const detailsRow = row.nextElementSibling;
             const button = row.querySelector(".expand-btn");
 
@@ -391,9 +391,17 @@ Main changes:
                 button.textContent = "+";
                 button.setAttribute("aria-expanded", "false");
             }
+
+            if (shouldForget && getRowSymbol(row)) {
+                const openSymbol = localStorage.getItem(OPEN_SYMBOL_KEY);
+
+                if (openSymbol === getRowSymbol(row)) {
+                    localStorage.removeItem(OPEN_SYMBOL_KEY);
+                }
+            }
         }
 
-        function openDetails(row) {
+        function openDetails(row, shouldRemember = true) {
             const detailsRow = row.nextElementSibling;
             const button = row.querySelector(".expand-btn");
 
@@ -405,6 +413,34 @@ Main changes:
             if (button) {
                 button.textContent = "−";
                 button.setAttribute("aria-expanded", "true");
+            }
+
+            if (shouldRemember && getRowSymbol(row)) {
+                localStorage.setItem(OPEN_SYMBOL_KEY, getRowSymbol(row));
+            }
+        }
+
+        function closeAllDetails() {
+            mainRows.forEach(function (row) {
+                closeDetails(row, false);
+            });
+        }
+
+        function openPreferredRowAfterRefresh() {
+            const activeRow = document.querySelector('.main-row[data-active="YES"]');
+            const savedSymbol = localStorage.getItem(OPEN_SYMBOL_KEY);
+
+            if (activeRow) {
+                openDetails(activeRow, true);
+                return;
+            }
+
+            if (savedSymbol) {
+                const savedRow = document.querySelector(`.main-row[data-symbol="${savedSymbol}"]`);
+
+                if (savedRow) {
+                    openDetails(savedRow, true);
+                }
             }
         }
 
@@ -422,10 +458,13 @@ Main changes:
                 row.style.display = shouldShow ? "" : "none";
 
                 if (!shouldShow) {
-                    closeDetails(row);
+                    closeDetails(row, false);
                 }
             });
         }
+
+        closeAllDetails();
+        openPreferredRowAfterRefresh();
 
         document.querySelectorAll(".expand-btn").forEach(function (button) {
             button.setAttribute("aria-expanded", "false");
@@ -441,9 +480,9 @@ Main changes:
                 const isOpen = detailsRow.classList.contains("open");
 
                 if (isOpen) {
-                    closeDetails(row);
+                    closeDetails(row, true);
                 } else {
-                    openDetails(row);
+                    openDetails(row, true);
                 }
             });
         });
