@@ -13,6 +13,12 @@
 #   - "WAIT FOR PULLBACK" is now "WAIT FOR BOUNCE"
 #   - Reason text now says "Waiting for bounce confirmation"
 # - Allowed clean pullback setups to become Sniper YES when confirmed by logic
+# - Cleaned up early action labels:
+#   - Early classification no longer sets READY NOW
+#   - READY NOW can only happen after final risk/reward + score filters pass
+# - Added clearer non-setup wording:
+#   - Status: Not Near Setup
+#   - Action: WAIT
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -70,7 +76,7 @@ def build_reason(status, decision, action, rr, score, dist, blockers):
         return f"Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
 
     if status == "Breakout Triggered":
-        if decision == "TRADE":
+        if decision == "TRADE" and action == "READY NOW":
             return f"Breakout triggered. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
         return f"Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
@@ -78,9 +84,12 @@ def build_reason(status, decision, action, rr, score, dist, blockers):
         return f"Near breakout level. Watching for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Pullback":
-        if action == "READY NOW":
+        if decision == "TRADE" and action == "READY NOW":
             return f"Pullback bounce confirmed. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
         return f"Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+
+    if status == "Not Near Setup":
+        return f"Not close enough to a clean setup yet. Distance from previous high is {round(dist, 2)}%. RR {round(rr, 2)}. Score {score}/10."
 
     return f"No clean setup.{blocker_text}"
 
@@ -112,15 +121,19 @@ def get_stock_data(symbol):
         # Negative = price is still below yesterday's high.
         dist = ((price - prev_high) / prev_high) * 100
 
-        status = "No Trade"
-        decision = "PASS"
-        action = "PASS"
+        status = "Not Near Setup"
+        decision = "WATCH"
+        action = "WAIT"
 
         entry = prev_high
         stop = prev_low
         target = prev_high + range_size
 
         # --- SETUP CLASSIFICATION ---
+        # Important:
+        # This section only classifies the setup.
+        # It does NOT give the final trading green light.
+        # READY NOW only happens later after score + risk/reward filters pass.
         if -0.5 <= dist <= 0:
             status = "Breakout Watch"
             decision = "WATCH"
@@ -128,8 +141,8 @@ def get_stock_data(symbol):
 
         elif 0 < dist <= 1:
             status = "Breakout Triggered"
-            decision = "TRADE"
-            action = "READY NOW"
+            decision = "WATCH"
+            action = "CHECK SETUP"
 
         elif dist > 1:
             status = "Extended"
@@ -190,6 +203,9 @@ def get_stock_data(symbol):
         if risk <= 0:
             score -= 2
 
+        if status == "Not Near Setup":
+            score -= 1
+
         score = max(0, min(score, 10))
 
         # --- BLOCKERS ---
@@ -211,7 +227,7 @@ def get_stock_data(symbol):
             blockers.append("score below trade quality")
 
         # --- FINAL TRADE DECISION ---
-        # Breakouts can become READY NOW if they pass strict filters.
+        # This is the only section allowed to set READY NOW.
         if status == "Breakout Triggered":
             if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
                 decision = "TRADE"
@@ -220,8 +236,6 @@ def get_stock_data(symbol):
                 decision = "PASS"
                 action = "PASS"
 
-        # Pullbacks should not say "WAIT FOR PULLBACK" because the pullback is already happening.
-        # We are waiting for the bounce/reclaim confirmation.
         elif status == "Pullback":
             if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
                 decision = "TRADE"
@@ -238,6 +252,10 @@ def get_stock_data(symbol):
             decision = "PASS"
             action = "TOO LATE / EXTENDED"
 
+        elif status == "Not Near Setup":
+            decision = "WATCH"
+            action = "WAIT"
+
         else:
             decision = "PASS"
             action = "PASS"
@@ -247,6 +265,7 @@ def get_stock_data(symbol):
 
         clean_breakout_sniper = (
             decision == "TRADE"
+            and action == "READY NOW"
             and score >= 7
             and status == "Breakout Triggered"
             and risk > 0
@@ -257,6 +276,7 @@ def get_stock_data(symbol):
 
         clean_pullback_sniper = (
             decision == "TRADE"
+            and action == "READY NOW"
             and score >= 7
             and status == "Pullback"
             and risk > 0
@@ -327,6 +347,20 @@ def decision_priority(stock):
     return priorities.get(stock.get("decision"), 9)
 
 
+def action_priority(stock):
+    priorities = {
+        "READY NOW": 0,
+        "WATCH FOR BREAK": 1,
+        "WAIT FOR BOUNCE": 2,
+        "CHECK SETUP": 3,
+        "WAIT": 4,
+        "TOO LATE / EXTENDED": 5,
+        "PASS": 6,
+    }
+
+    return priorities.get(stock.get("action"), 9)
+
+
 def grade_priority(stock):
     priorities = {
         "A+": 0,
@@ -345,6 +379,7 @@ def scanner_sort_key(stock):
     return (
         focus_bonus,
         decision_priority(stock),
+        action_priority(stock),
         grade_priority(stock),
         -stock.get("score", 0),
         -stock.get("rr", 0),
