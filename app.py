@@ -9,6 +9,10 @@
 # - Added reasoning text for decisions
 # - Added Focus Rank so the best 1–2 actionable setups rise to the top
 # - Fixed decision override so WATCH setups are not automatically forced to PASS
+# - Updated pullback wording:
+#   - "WAIT FOR PULLBACK" is now "WAIT FOR BOUNCE"
+#   - Reason text now says "Waiting for bounce confirmation"
+# - Allowed clean pullback setups to become Sniper YES when confirmed by logic
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -71,10 +75,12 @@ def build_reason(status, decision, action, rr, score, dist, blockers):
         return f"Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Breakout Watch":
-        return f"Near breakout level. Watching for confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        return f"Near breakout level. Watching for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Pullback":
-        return f"Pullback setup forming. Waiting confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        if action == "READY NOW":
+            return f"Pullback bounce confirmed. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
+        return f"Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     return f"No clean setup.{blocker_text}"
 
@@ -102,6 +108,8 @@ def get_stock_data(symbol):
         range_size = high - low
 
         # --- DISTANCE FROM PREVIOUS HIGH ---
+        # Positive = price is above yesterday's high.
+        # Negative = price is still below yesterday's high.
         dist = ((price - prev_high) / prev_high) * 100
 
         status = "No Trade"
@@ -131,7 +139,7 @@ def get_stock_data(symbol):
         elif percent > 0 and price > open_price and range_size >= 2:
             status = "Pullback"
             decision = "WATCH"
-            action = "WAIT FOR PULLBACK"
+            action = "WAIT FOR BOUNCE"
             entry = price
             stop = low
             target = price + 3
@@ -176,7 +184,7 @@ def get_stock_data(symbol):
         if status == "Extended":
             score -= 2
 
-        if status == "Breakout Triggered" and rr < 1.5:
+        if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
             score -= 2
 
         if risk <= 0:
@@ -196,16 +204,14 @@ def get_stock_data(symbol):
         if reward <= 0:
             blockers.append("no upside target")
 
-        if status == "Breakout Triggered" and rr < 1.5:
+        if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
             blockers.append("risk/reward below 1.5")
 
-        if status == "Breakout Triggered" and score < 7:
+        if status in ["Breakout Triggered", "Pullback"] and score < 7:
             blockers.append("score below trade quality")
 
         # --- FINAL TRADE DECISION ---
-        # Important:
-        # WATCH setups stay WATCH unless they are extended or invalid.
-        # TRADE setups must pass stricter requirements.
+        # Breakouts can become READY NOW if they pass strict filters.
         if status == "Breakout Triggered":
             if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
                 decision = "TRADE"
@@ -214,13 +220,19 @@ def get_stock_data(symbol):
                 decision = "PASS"
                 action = "PASS"
 
-        elif status in ["Breakout Watch", "Pullback"]:
-            if status == "Breakout Watch":
-                decision = "WATCH"
-                action = "WATCH FOR BREAK"
+        # Pullbacks should not say "WAIT FOR PULLBACK" because the pullback is already happening.
+        # We are waiting for the bounce/reclaim confirmation.
+        elif status == "Pullback":
+            if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
+                decision = "TRADE"
+                action = "READY NOW"
             else:
                 decision = "WATCH"
-                action = "WAIT FOR PULLBACK"
+                action = "WAIT FOR BOUNCE"
+
+        elif status == "Breakout Watch":
+            decision = "WATCH"
+            action = "WATCH FOR BREAK"
 
         elif status == "Extended":
             decision = "PASS"
@@ -233,7 +245,7 @@ def get_stock_data(symbol):
         # --- SNIPER MODE ---
         sniper = "NO"
 
-        if (
+        clean_breakout_sniper = (
             decision == "TRADE"
             and score >= 7
             and status == "Breakout Triggered"
@@ -241,7 +253,20 @@ def get_stock_data(symbol):
             and reward > 0
             and rr >= 1.5
             and 0 < dist <= 0.5
-        ):
+        )
+
+        clean_pullback_sniper = (
+            decision == "TRADE"
+            and score >= 7
+            and status == "Pullback"
+            and risk > 0
+            and reward > 0
+            and rr >= 1.5
+            and price > open_price
+            and price > stop
+        )
+
+        if clean_breakout_sniper or clean_pullback_sniper:
             sniper = "YES"
 
         # --- GRADE ---
