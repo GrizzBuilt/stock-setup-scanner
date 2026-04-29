@@ -1,6 +1,6 @@
 # File: app.py
-# Purpose: Flask stock scanner with breakout/pullback logic, Sniper Mode,
-# confidence, verdicts, and entry-gap chase protection.
+# Purpose: Flask stock scanner with setup scoring, Sniper Mode,
+# entry-gap chase protection, and SQLite Active Position Mode.
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -9,13 +9,43 @@ from flask import Flask, render_template, request, redirect, url_for
 
 import yfinance as yf
 
-from db import init_db, get_watchlist, add_symbol, remove_symbol
+from db import (
+    init_db,
+    get_watchlist,
+    add_symbol,
+    remove_symbol,
+    get_active_position,
+    set_active_position,
+    clear_active_position,
+)
 
 app = Flask(__name__)
 
 
+def add_empty_position_fields(stock):
+    stock.update(
+        {
+            "is_active_position": False,
+            "active_position_warning": "",
+            "actual_entry": "",
+            "actual_shares": "",
+            "actual_pl": 0,
+            "actual_pl_per_share": 0,
+            "actual_entry_gap": 0,
+            "protect_level": "",
+            "quick_profit_level": "",
+            "goal_profit_level": "",
+            "cut_level": "",
+            "position_verdict": "",
+            "position_management": "",
+        }
+    )
+
+    return stock
+
+
 def empty_stock(symbol, message="No data"):
-    return {
+    stock = {
         "symbol": symbol,
         "price": "—",
         "percent": 0,
@@ -41,6 +71,8 @@ def empty_stock(symbol, message="No data"):
         "focus_label": "",
         "reason": message,
     }
+
+    return add_empty_position_fields(stock)
 
 
 def get_grade(score):
@@ -249,6 +281,149 @@ def get_entry_warning(entry_gap):
         return "LATE ENTRY / QUICK TRADE ONLY"
 
     return "DO NOT CHASE"
+
+
+def build_position_verdict(
+    current_price,
+    actual_entry,
+    shares,
+    scanner_entry,
+    sniper,
+    trade_style,
+):
+    pl_per_share = current_price - actual_entry
+    total_pl = pl_per_share * shares
+    actual_entry_gap = actual_entry - scanner_entry
+
+    protect_level = actual_entry
+    quick_profit_level = actual_entry + 0.50
+    goal_profit_level = actual_entry + 1.00
+    cut_level = actual_entry - 0.50
+
+    if actual_entry_gap > 1.00:
+        entry_gap_warning = (
+            f"Your entry is ${round(actual_entry_gap, 2)} above scanner entry. "
+            "This is late. Manage tight."
+        )
+    elif actual_entry_gap > 0.50:
+        entry_gap_warning = (
+            f"Your entry is ${round(actual_entry_gap, 2)} above scanner entry. "
+            "Quick trade only."
+        )
+    elif actual_entry_gap >= 0:
+        entry_gap_warning = "Your entry is close to scanner entry."
+    else:
+        entry_gap_warning = "Your entry is better than scanner entry."
+
+    if pl_per_share >= 1.00 and sniper == "YES":
+        verdict = "TRAIL WITH CONFIDENCE — LOCK PROFIT"
+        management = (
+            "You are up more than $1.00/share on a Sniper setup. "
+            "Trail it, but do not let it come back under your protect level."
+        )
+
+    elif pl_per_share >= 0.50:
+        verdict = "TAKE PROFIT OK — PROTECT GREEN"
+        management = (
+            "You are in the quick profit zone. Taking profit is valid. "
+            "If you hold, protect entry and do not let the trade turn red."
+        )
+
+    elif pl_per_share > 0:
+        verdict = "GREEN — PROTECT ENTRY"
+        management = (
+            "You are green but not at the quick profit goal yet. "
+            "Let it try, but protect your actual entry."
+        )
+
+    elif -0.50 < pl_per_share <= 0:
+        verdict = "NEEDS RECLAIM — WATCH TIGHT"
+        management = (
+            "Price is below your actual entry. It needs to reclaim quickly. "
+            "Do not average down."
+        )
+
+    elif -1.00 < pl_per_share <= -0.50:
+        verdict = "DANGER — CUT IF NO FAST RECLAIM"
+        management = (
+            "Loss is beyond the normal small-account comfort zone. "
+            "If it cannot reclaim quickly, cut it."
+        )
+
+    else:
+        verdict = "CUT NOW — LOSS TOO BIG"
+        management = (
+            "The trade has moved too far against your actual entry. "
+            "Protect the account. Do not hope."
+        )
+
+    return {
+        "actual_pl": round(total_pl, 2),
+        "actual_pl_per_share": round(pl_per_share, 2),
+        "actual_entry_gap": round(actual_entry_gap, 2),
+        "protect_level": round(protect_level, 2),
+        "quick_profit_level": round(quick_profit_level, 2),
+        "goal_profit_level": round(goal_profit_level, 2),
+        "cut_level": round(cut_level, 2),
+        "position_verdict": verdict,
+        "position_management": f"{entry_gap_warning} {management}",
+    }
+
+
+def apply_active_position_to_stocks(stocks, active_position):
+    for stock in stocks:
+        add_empty_position_fields(stock)
+
+    if not active_position:
+        return stocks
+
+    active_symbol = active_position["symbol"].upper().strip()
+    actual_entry = float(active_position["entry"])
+    shares = float(active_position["shares"])
+
+    found_active_row = False
+
+    for stock in stocks:
+        symbol = stock.get("symbol", "").upper().strip()
+
+        if symbol != active_symbol:
+            stock["active_position_warning"] = (
+                f"ACTIVE POSITION IS {active_symbol} — THIS ROW IS {symbol}"
+            )
+            continue
+
+        found_active_row = True
+        stock["is_active_position"] = True
+        stock["actual_entry"] = round(actual_entry, 2)
+        stock["actual_shares"] = shares
+        stock["active_position_warning"] = "ACTIVE POSITION — MANAGE THIS TICKER"
+
+        try:
+            current_price = float(stock.get("price", 0))
+            scanner_entry = float(stock.get("entry", 0))
+        except Exception:
+            stock["position_verdict"] = "ACTIVE POSITION — PRICE DATA ERROR"
+            stock["position_management"] = "Could not calculate active P/L."
+            continue
+
+        position_data = build_position_verdict(
+            current_price=current_price,
+            actual_entry=actual_entry,
+            shares=shares,
+            scanner_entry=scanner_entry,
+            sniper=stock.get("sniper", "NO"),
+            trade_style=stock.get("trade_style", "AVOID"),
+        )
+
+        stock.update(position_data)
+
+    if not found_active_row:
+        for stock in stocks:
+            stock["active_position_warning"] = (
+                f"ACTIVE POSITION IS {active_symbol}, BUT IT IS NOT IN THIS WATCHLIST"
+            )
+
+    return stocks
 
 
 def get_stock_data(symbol):
@@ -515,7 +690,7 @@ def get_stock_data(symbol):
             entry_warning=entry_warning,
         )
 
-        return {
+        stock = {
             "symbol": symbol,
             "price": round(price, 2),
             "percent": round(percent, 2),
@@ -541,6 +716,8 @@ def get_stock_data(symbol):
             "focus_label": "",
             "reason": reason,
         }
+
+        return add_empty_position_fields(stock)
 
     except Exception as e:
         return empty_stock(symbol, str(e))
@@ -606,9 +783,11 @@ def grade_priority(stock):
 
 
 def scanner_sort_key(stock):
+    active_bonus = 0 if stock.get("is_active_position") else 1
     focus_bonus = 0 if is_focus_candidate(stock) else 1
 
     return (
+        active_bonus,
         focus_bonus,
         decision_priority(stock),
         confidence_priority(stock),
@@ -638,7 +817,10 @@ def add_focus_labels(stocks):
 @app.route("/")
 def home():
     symbols = get_watchlist()
+    active_position = get_active_position()
+
     stocks = [get_stock_data(s) for s in symbols]
+    stocks = apply_active_position_to_stocks(stocks, active_position)
 
     stocks.sort(key=scanner_sort_key)
     stocks = add_focus_labels(stocks)
@@ -646,8 +828,34 @@ def home():
     return render_template(
         "index.html",
         stocks=stocks,
+        active_position=active_position,
         last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
+
+
+@app.route("/position", methods=["POST"])
+def set_position():
+    symbol = request.form.get("position_symbol", "").upper().strip()
+    entry_raw = request.form.get("position_entry", "").strip()
+    shares_raw = request.form.get("position_shares", "").strip()
+
+    try:
+        entry = float(entry_raw)
+        shares = float(shares_raw)
+
+        if symbol and entry > 0 and shares > 0:
+            set_active_position(symbol, entry, shares)
+
+    except ValueError:
+        pass
+
+    return redirect(url_for("home"))
+
+
+@app.route("/position/clear", methods=["POST"])
+def clear_position():
+    clear_active_position()
+    return redirect(url_for("home"))
 
 
 @app.route("/add", methods=["POST"])
