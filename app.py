@@ -19,6 +19,16 @@
 # - Added clearer non-setup wording:
 #   - Status: Not Near Setup
 #   - Action: WAIT
+# - Added confidence + trade style fields to make decisions faster:
+#   - Confidence: HIGH / MEDIUM / LOW / NONE
+#   - Trade Style: SNIPER / QUICK TRADE / WATCH ONLY / AVOID
+#   - Management: plain-English in-trade guidance
+# - Updated Grade logic so score and grade feel more natural:
+#   - 9–10 = A+
+#   - 8 = A
+#   - 7 = B
+#   - 6 = C
+#   - 0–5 = F
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -43,6 +53,9 @@ def empty_stock(symbol, message="No data"):
         "score": 0,
         "grade": "F",
         "sniper": "NO",
+        "confidence": "NONE",
+        "trade_style": "AVOID",
+        "management": "No trade. Wait for a cleaner setup.",
         "rr": 0,
         "distance": 0,
         "entry": "—",
@@ -54,10 +67,10 @@ def empty_stock(symbol, message="No data"):
     }
 
 
-def get_grade(score, sniper):
-    if score >= 9 and sniper == "YES":
+def get_grade(score):
+    if score >= 9:
         return "A+"
-    if score >= 8 and sniper == "YES":
+    if score >= 8:
         return "A"
     if score >= 7:
         return "B"
@@ -66,32 +79,108 @@ def get_grade(score, sniper):
     return "F"
 
 
-def build_reason(status, decision, action, rr, score, dist, blockers):
+def get_confidence(decision, action, sniper, score, rr, status):
+    if decision == "TRADE" and action == "READY NOW" and sniper == "YES" and score >= 8 and rr >= 1.5:
+        return "HIGH"
+
+    if decision == "TRADE" and action == "READY NOW" and score >= 7 and rr >= 1.5:
+        return "MEDIUM"
+
+    if decision == "WATCH" and status in ["Breakout Watch", "Pullback"]:
+        return "LOW"
+
+    return "NONE"
+
+
+def get_trade_style(decision, action, sniper, confidence):
+    if decision == "TRADE" and action == "READY NOW" and sniper == "YES":
+        return "SNIPER"
+
+    if decision == "TRADE" and action == "READY NOW" and confidence == "MEDIUM":
+        return "QUICK TRADE"
+
+    if decision == "WATCH":
+        return "WATCH ONLY"
+
+    return "AVOID"
+
+
+def build_management(decision, action, sniper, confidence, trade_style, entry, stop, target):
+    if decision == "TRADE" and action == "READY NOW" and trade_style == "SNIPER":
+        return (
+            "SNIPER setup. You can take the trade if it matches your plan. "
+            "At +$0.50, protect entry. At +$1.00, either take profit or trail tight. "
+            "Do not let a clean green trade turn red."
+        )
+
+    if decision == "TRADE" and action == "READY NOW" and trade_style == "QUICK TRADE":
+        return (
+            "Valid trade, but not A+ Sniper. Treat it as a quick trade. "
+            "Take +$0.50 to +$1.00 if offered, protect entry fast, and do not expect a runner."
+        )
+
+    if action == "WATCH FOR BREAK":
+        return (
+            "Watch only. Do not enter yet. Wait for price to break the level and hold. "
+            "No confirmation, no trade."
+        )
+
+    if action == "WAIT FOR BOUNCE":
+        return (
+            "Watch only. The pullback is happening, but the bounce is not confirmed. "
+            "Wait for price to stop falling and reclaim strength."
+        )
+
+    if action == "TOO LATE / EXTENDED":
+        return (
+            "Too extended. Do not chase. Wait for a reset or pullback."
+        )
+
+    if action == "WAIT":
+        return (
+            "Not near a clean setup. Keep it on watch, but do not force a trade."
+        )
+
+    return "No trade. Wait for a cleaner setup."
+
+
+def build_reason(status, decision, action, rr, score, dist, blockers, confidence, trade_style):
     blocker_text = ""
 
     if blockers:
         blocker_text = " Blocker: " + "; ".join(blockers) + "."
 
+    prefix = f"{trade_style}. Confidence: {confidence}."
+
     if status == "Extended":
-        return f"Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
+        return f"{prefix} Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
 
     if status == "Breakout Triggered":
         if decision == "TRADE" and action == "READY NOW":
-            return f"Breakout triggered. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
-        return f"Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+            return (
+                f"{prefix} Breakout triggered. RR {round(rr, 2)}. "
+                f"Score {score}/10. Trade is valid now, but manage based on trade style."
+            )
+        return f"{prefix} Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Breakout Watch":
-        return f"Near breakout level. Watching for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        return f"{prefix} Near breakout level. Watching for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Pullback":
         if decision == "TRADE" and action == "READY NOW":
-            return f"Pullback bounce confirmed. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
-        return f"Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+            return (
+                f"{prefix} Pullback bounce confirmed. RR {round(rr, 2)}. "
+                f"Score {score}/10. Trade is valid now, but manage based on trade style."
+            )
+        return f"{prefix} Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Not Near Setup":
-        return f"Not close enough to a clean setup yet. Distance from previous high is {round(dist, 2)}%. RR {round(rr, 2)}. Score {score}/10."
+        return (
+            f"{prefix} Not close enough to a clean setup yet. "
+            f"Distance from previous high is {round(dist, 2)}%. RR {round(rr, 2)}. Score {score}/10."
+        )
 
-    return f"No clean setup.{blocker_text}"
+    return f"{prefix} No clean setup.{blocker_text}"
 
 
 def get_stock_data(symbol):
@@ -261,12 +350,14 @@ def get_stock_data(symbol):
             action = "PASS"
 
         # --- SNIPER MODE ---
+        # Sniper is reserved for the cleanest A+ style setups.
+        # A setup can still be TRADE / READY NOW without being Sniper.
         sniper = "NO"
 
         clean_breakout_sniper = (
             decision == "TRADE"
             and action == "READY NOW"
-            and score >= 7
+            and score >= 8
             and status == "Breakout Triggered"
             and risk > 0
             and reward > 0
@@ -277,7 +368,7 @@ def get_stock_data(symbol):
         clean_pullback_sniper = (
             decision == "TRADE"
             and action == "READY NOW"
-            and score >= 7
+            and score >= 8
             and status == "Pullback"
             and risk > 0
             and reward > 0
@@ -289,8 +380,32 @@ def get_stock_data(symbol):
         if clean_breakout_sniper or clean_pullback_sniper:
             sniper = "YES"
 
-        # --- GRADE ---
-        grade = get_grade(score, sniper)
+        # --- CONFIDENCE + MANAGEMENT ---
+        grade = get_grade(score)
+        confidence = get_confidence(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            score=score,
+            rr=rr,
+            status=status,
+        )
+        trade_style = get_trade_style(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            confidence=confidence,
+        )
+        management = build_management(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            confidence=confidence,
+            trade_style=trade_style,
+            entry=entry,
+            stop=stop,
+            target=target,
+        )
 
         # --- REASON TEXT ---
         reason = build_reason(
@@ -301,6 +416,8 @@ def get_stock_data(symbol):
             score=score,
             dist=dist,
             blockers=blockers,
+            confidence=confidence,
+            trade_style=trade_style,
         )
 
         return {
@@ -313,6 +430,9 @@ def get_stock_data(symbol):
             "score": score,
             "grade": grade,
             "sniper": sniper,
+            "confidence": confidence,
+            "trade_style": trade_style,
+            "management": management,
             "rr": round(rr, 2) if rr else 0,
             "distance": round(dist, 2),
             "entry": round(entry, 2),
@@ -330,7 +450,7 @@ def get_stock_data(symbol):
 def is_focus_candidate(stock):
     return (
         stock.get("decision") == "TRADE"
-        and stock.get("sniper") == "YES"
+        and stock.get("action") == "READY NOW"
         and stock.get("score", 0) >= 7
         and stock.get("rr", 0) >= 1.5
         and stock.get("status") != "Extended"
@@ -345,6 +465,17 @@ def decision_priority(stock):
     }
 
     return priorities.get(stock.get("decision"), 9)
+
+
+def confidence_priority(stock):
+    priorities = {
+        "HIGH": 0,
+        "MEDIUM": 1,
+        "LOW": 2,
+        "NONE": 3,
+    }
+
+    return priorities.get(stock.get("confidence"), 9)
 
 
 def action_priority(stock):
@@ -379,6 +510,7 @@ def scanner_sort_key(stock):
     return (
         focus_bonus,
         decision_priority(stock),
+        confidence_priority(stock),
         action_priority(stock),
         grade_priority(stock),
         -stock.get("score", 0),
