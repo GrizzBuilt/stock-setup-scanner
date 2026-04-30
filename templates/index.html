@@ -367,6 +367,33 @@ Main changes:
                                         </div>
                                     </div>
 
+                                    <div class="details-grid">
+                                        <div>
+                                            <span>Hold Plan</span>
+                                            <strong>{{ stock.hold_plan }}</strong>
+                                        </div>
+
+                                        <div>
+                                            <span>Hold Time</span>
+                                            <strong>{{ stock.hold_days }}</strong>
+                                        </div>
+
+                                        <div>
+                                            <span>Review Rule</span>
+                                            <strong>{{ stock.review_rule }}</strong>
+                                        </div>
+
+                                        <div>
+                                            <span>Exit Rule</span>
+                                            <strong>{{ stock.exit_rule }}</strong>
+                                        </div>
+
+                                        <div>
+                                            <span>Profit Rule</span>
+                                            <strong>{{ stock.profit_rule }}</strong>
+                                        </div>
+                                    </div>
+
                                     <p class="management-cell">
                                         <strong>Management:</strong>
                                         {{ stock.management }}
@@ -709,6 +736,14 @@ Main changes:
                                     <div><span>Trade Style</span><strong data-field="trade_style">${escapeHtml(stock.trade_style)}</strong></div>
                                     <div><span>Entry Gap</span><strong data-field="entry_gap">$${escapeHtml(stock.entry_gap)}</strong></div>
                                     <div><span>Entry Warning</span><strong data-field="entry_warning">${escapeHtml(stock.entry_warning)}</strong></div>
+                                </div>
+
+                                <div class="details-grid">
+                                    <div><span>Hold Plan</span><strong data-field="hold_plan">${escapeHtml(stock.hold_plan)}</strong></div>
+                                    <div><span>Hold Time</span><strong data-field="hold_days">${escapeHtml(stock.hold_days)}</strong></div>
+                                    <div><span>Review Rule</span><strong data-field="review_rule">${escapeHtml(stock.review_rule)}</strong></div>
+                                    <div><span>Exit Rule</span><strong data-field="exit_rule">${escapeHtml(stock.exit_rule)}</strong></div>
+                                    <div><span>Profit Rule</span><strong data-field="profit_rule">${escapeHtml(stock.profit_rule)}</strong></div>
                                 </div>
 
                                 <p class="management-cell">

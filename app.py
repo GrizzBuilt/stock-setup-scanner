@@ -42,6 +42,63 @@ def normalize_mode(mode):
     return mode
 
 
+def build_hold_plan(mode, status, action, decision):
+    mode = normalize_mode(mode)
+
+    if mode == "quick":
+        return {
+            "hold_plan": "Quick trade only",
+            "hold_days": "Minutes to 1 day",
+            "review_rule": "Manage fast",
+            "exit_rule": "Cut if setup fails",
+            "profit_rule": "Take $0.50–$1.00 if offered",
+        }
+
+    if status == "Swing Pullback":
+        return {
+            "hold_plan": "Short swing",
+            "hold_days": "2–5 trading days",
+            "review_rule": "Review daily. Hold only while price stays above stop and trend holds.",
+            "exit_rule": "Exit if price closes below stop, loses the 20-day average, or momentum fails.",
+            "profit_rule": "Take profit near target or trail if strength continues.",
+        }
+
+    if status == "Swing Base":
+        return {
+            "hold_plan": "Base breakout swing",
+            "hold_days": "3–10 trading days",
+            "review_rule": "Review daily. Hold while breakout/base structure stays intact.",
+            "exit_rule": "Exit if price breaks back below the base, closes below stop, or volume fades after breakout.",
+            "profit_rule": "Take profit near target, or trail under higher lows.",
+        }
+
+    if status == "Swing Trend":
+        return {
+            "hold_plan": "Trend watch",
+            "hold_days": "5–15 trading days if trend continues",
+            "review_rule": "Review daily. Hold only while price stays above the 20-day average and keeps making higher lows.",
+            "exit_rule": "Exit if price loses the 20-day average, breaks trend support, or becomes too extended.",
+            "profit_rule": "Trail instead of guessing a top.",
+        }
+
+    if status == "Swing Extended":
+        return {
+            "hold_plan": "Do not chase",
+            "hold_days": "No planned hold",
+            "review_rule": "Wait for reset.",
+            "exit_rule": "Avoid new entry while extended.",
+            "profit_rule": "No profit plan because this is not a clean entry.",
+        }
+
+    return {
+        "hold_plan": "No swing plan",
+        "hold_days": "No planned hold",
+        "review_rule": "Wait for cleaner structure.",
+        "exit_rule": "No trade.",
+        "profit_rule": "No target until setup forms.",
+    }
+
+
 def get_earnings_blocker(ticker):
     """
     Best-effort earnings awareness.
@@ -139,6 +196,8 @@ def empty_stock(symbol, message="No data"):
         "focus_label": "",
         "reason": message,
     }
+
+    stock.update(build_hold_plan("quick", stock["status"], stock["action"], stock["decision"]))
 
     return add_empty_position_fields(stock)
 
@@ -1039,6 +1098,8 @@ def get_quick_stock_data(symbol):
             "reason": reason,
         }
 
+        stock.update(build_hold_plan("quick", status, action, decision))
+
         return add_empty_position_fields(stock)
 
     except Exception as e:
@@ -1472,6 +1533,8 @@ def get_swing_stock_data(symbol):
             "focus_label": "",
             "reason": reason,
         }
+
+        stock.update(build_hold_plan("swing", status, action, decision))
 
         return add_empty_position_fields(stock)
 
