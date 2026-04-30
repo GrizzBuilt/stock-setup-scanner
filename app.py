@@ -660,8 +660,10 @@ def build_position_verdict(
     if pl_per_share >= 1.00:
         green_protect = max(actual_entry, actual_entry + (pl_per_share * 0.50))
         management = (
-            f"You are up more than $1.00/share. This is the goal zone. "
-            f"Take profit, or trail near ${round(green_protect, 2)} and protect green."
+            f"Your position is up ${round(total_pl, 2)} actual / "
+            f"${round(pl_per_share, 2)} per share (+{round(percent_gain, 2)}%). "
+            f"This is past the goal zone. Take profit, or trail near "
+            f"${round(green_protect, 2)} and protect green."
         )
         verdict = "GOAL HIT — TAKE PROFIT OR TRAIL TIGHT"
 
