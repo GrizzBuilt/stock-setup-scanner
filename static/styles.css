@@ -94,6 +94,28 @@ button:hover {
     color: #d1d5db;
 }
 
+.active-trades-summary {
+    margin-bottom: 16px;
+}
+
+.active-trade-item {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #374151;
+}
+
+.active-trade-item:last-child {
+    border-bottom: none;
+}
+
+.active-trade-item span {
+    color: #d1d5db;
+    font-size: 0.92rem;
+}
+
 .card {
     background: #1f2937;
     border: 1px solid #374151;

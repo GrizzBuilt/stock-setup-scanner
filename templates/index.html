@@ -54,37 +54,25 @@ Main changes:
         </header>
 
         <section class="active-position-panel card">
-            <h2>Active Position</h2>
+            <h2>Add / Edit Active Position</h2>
 
             <div id="activePositionCurrent">
-                {% if active_position %}
-                    <div class="active-position-current">
-                        <p>
-                            <strong>Current Active Position:</strong>
-                            {{ active_position.symbol }}
-                            @ ${{ "%.2f"|format(active_position.entry) }}
-                            |
-                            Capital: ${{ "%.2f"|format(active_position.capital or (active_position.entry * active_position.shares)) }}
-                            |
-                            Shares: {{ "%.5f"|format(active_position.shares) }}
-                        </p>
-
-                        <form action="{{ url_for('clear_position') }}" method="POST" class="clear-position-form">
-                            <input type="hidden" name="mode" value="{{ mode }}">
-                            <button type="submit" class="remove-btn">Clear Position</button>
-                        </form>
-                    </div>
-                {% else %}
-                    <p class="subtitle">No active position set.</p>
-                {% endif %}
+                <p class="subtitle">
+                    {% if active_positions %}
+                        {{ active_positions|length }} active trade{% if active_positions|length != 1 %}s{% endif %} open.
+                    {% else %}
+                        No active positions set.
+                    {% endif %}
+                </p>
             </div>
 
-            <form action="{{ url_for('set_position') }}" method="POST" class="active-position-form">
+            <form action="{{ url_for('set_position') }}" method="POST" class="active-position-form" id="activePositionForm">
                 <input type="hidden" name="mode" value="{{ mode }}">
 
                 <input
                     type="text"
                     name="position_symbol"
+                    id="positionSymbol"
                     placeholder="Ticker, ex: GOOGL"
                     required
                 >
@@ -93,6 +81,7 @@ Main changes:
                     type="number"
                     step="0.01"
                     name="position_entry"
+                    id="positionEntry"
                     placeholder="Actual entry"
                     required
                 >
@@ -101,6 +90,7 @@ Main changes:
                     type="number"
                     step="0.00001"
                     name="position_shares"
+                    id="positionShares"
                     placeholder="Shares, ex: 0.38893"
                 >
 
@@ -108,7 +98,20 @@ Main changes:
                     type="number"
                     step="0.01"
                     name="position_capital"
+                    id="positionCapital"
                     placeholder="Dollars invested, ex: 102.00"
+                >
+
+                <select name="position_trade_type" id="positionTradeType">
+                    <option value="swing" selected>Swing</option>
+                    <option value="quick">Quick</option>
+                </select>
+
+                <input
+                    type="text"
+                    name="position_notes"
+                    id="positionNotes"
+                    placeholder="Notes"
                 >
 
                 <button type="submit">Set Active Position</button>
@@ -137,6 +140,49 @@ Main changes:
                 Sniper only
             </label>
         </div>
+
+        <section class="active-trades-summary card">
+            <h2>Active Trades</h2>
+
+            <div id="activeTradesSummary">
+                {% if active_trades %}
+                    {% for trade in active_trades %}
+                        <div class="active-trade-item" data-symbol="{{ trade.symbol }}">
+                            <strong>{{ trade.symbol }}</strong>
+                            <span>Entry ${{ trade.entry }}</span>
+                            <span>Current {% if trade.current_price %}${{ trade.current_price }}{% else %}—{% endif %}</span>
+                            <span>Capital ${{ trade.capital_in }}</span>
+                            <span>Shares {{ trade.shares }}</span>
+                            <span>P/L {% if trade.actual_pl != "" %}${{ trade.actual_pl }}{% else %}—{% endif %}</span>
+                            <span>{% if trade.percent_gain != "" %}{{ trade.percent_gain }}%{% else %}—{% endif %}</span>
+                            <span>{{ trade.verdict }}</span>
+                            <span>Green Protect {% if trade.green_protect %}${{ trade.green_protect }}{% else %}—{% endif %}</span>
+
+                            <form method="POST" action="{{ url_for('exit_position', symbol=trade.symbol) }}">
+                                <input type="hidden" name="mode" value="{{ mode }}">
+                                <input type="hidden" name="exit_price" value="{{ trade.current_price }}">
+                                <button type="submit" class="remove-btn">Exit Trade</button>
+                            </form>
+
+                            <button
+                                type="button"
+                                class="edit-position-btn"
+                                data-symbol="{{ trade.symbol }}"
+                                data-entry="{{ trade.entry }}"
+                                data-capital="{{ trade.capital_in }}"
+                                data-shares="{{ trade.shares }}"
+                                data-trade-type="{{ trade.trade_type }}"
+                                data-notes="{{ trade.notes }}"
+                            >
+                                Edit Position
+                            </button>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <p class="subtitle">No active trades.</p>
+                {% endif %}
+            </div>
+        </section>
 
         <section class="card">
             <table>
@@ -461,6 +507,13 @@ Main changes:
         const refreshDataBtn = document.getElementById("refreshDataBtn");
         const refreshStatus = document.getElementById("refreshStatus");
         const activePositionCurrent = document.getElementById("activePositionCurrent");
+        const activeTradesSummary = document.getElementById("activeTradesSummary");
+        const positionSymbol = document.getElementById("positionSymbol");
+        const positionEntry = document.getElementById("positionEntry");
+        const positionShares = document.getElementById("positionShares");
+        const positionCapital = document.getElementById("positionCapital");
+        const positionTradeType = document.getElementById("positionTradeType");
+        const positionNotes = document.getElementById("positionNotes");
 
         const OPEN_SYMBOL_KEY = "stockScannerOpenSymbol";
         const REFRESH_INTERVAL_MS = 15000;
@@ -616,30 +669,72 @@ Main changes:
             });
         }
 
-        function renderActivePosition(activePosition) {
-            if (!activePosition) {
-                activePositionCurrent.innerHTML = '<p class="subtitle">No active position set.</p>';
+        function renderActivePosition(activePositions) {
+            const count = activePositions ? activePositions.length : 0;
+
+            if (!count) {
+                activePositionCurrent.innerHTML = '<p class="subtitle">No active positions set.</p>';
                 return;
             }
 
-            activePositionCurrent.innerHTML = `
-                <div class="active-position-current">
-                    <p>
-                        <strong>Current Active Position:</strong>
-                        ${escapeHtml(activePosition.symbol)}
-                        @ $${Number(activePosition.entry).toFixed(2)}
-                        |
-                        Capital: $${Number(activePosition.capital || (activePosition.entry * activePosition.shares)).toFixed(2)}
-                        |
-                        Shares: ${Number(activePosition.shares).toFixed(5)}
-                    </p>
+            activePositionCurrent.innerHTML = `<p class="subtitle">${count} active trade${count === 1 ? "" : "s"} open.</p>`;
+        }
 
-                    <form action="/position/clear" method="POST" class="clear-position-form">
-                        <input type="hidden" name="mode" value="${escapeHtml(getCurrentMode())}">
-                        <button type="submit" class="remove-btn">Clear Position</button>
-                    </form>
-                </div>
-            `;
+        function renderActiveTradesSummary(activeTrades) {
+            if (!activeTrades || !activeTrades.length) {
+                activeTradesSummary.innerHTML = '<p class="subtitle">No active trades.</p>';
+                return;
+            }
+
+            activeTradesSummary.innerHTML = activeTrades.map(function (trade) {
+                const currentPrice = trade.current_price !== "" ? `$${escapeHtml(trade.current_price)}` : "—";
+                const actualPl = trade.actual_pl !== "" ? `$${escapeHtml(trade.actual_pl)}` : "—";
+                const percentGain = trade.percent_gain !== "" ? `${escapeHtml(trade.percent_gain)}%` : "—";
+                const greenProtect = trade.green_protect ? `$${escapeHtml(trade.green_protect)}` : "—";
+
+                return `
+                    <div class="active-trade-item" data-symbol="${escapeHtml(trade.symbol)}">
+                        <strong>${escapeHtml(trade.symbol)}</strong>
+                        <span>Entry $${escapeHtml(trade.entry)}</span>
+                        <span>Current ${currentPrice}</span>
+                        <span>Capital $${escapeHtml(trade.capital_in)}</span>
+                        <span>Shares ${escapeHtml(trade.shares)}</span>
+                        <span>P/L ${actualPl}</span>
+                        <span>${percentGain}</span>
+                        <span>${escapeHtml(trade.verdict)}</span>
+                        <span>Green Protect ${greenProtect}</span>
+
+                        <form method="POST" action="/position/exit/${encodeURIComponent(trade.symbol)}">
+                            <input type="hidden" name="mode" value="${escapeHtml(getCurrentMode())}">
+                            <input type="hidden" name="exit_price" value="${escapeHtml(trade.current_price)}">
+                            <button type="submit" class="remove-btn">Exit Trade</button>
+                        </form>
+
+                        <button
+                            type="button"
+                            class="edit-position-btn"
+                            data-symbol="${escapeHtml(trade.symbol)}"
+                            data-entry="${escapeHtml(trade.entry)}"
+                            data-capital="${escapeHtml(trade.capital_in)}"
+                            data-shares="${escapeHtml(trade.shares)}"
+                            data-trade-type="${escapeHtml(trade.trade_type)}"
+                            data-notes="${escapeHtml(trade.notes)}"
+                        >
+                            Edit Position
+                        </button>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        function fillPositionFormFromButton(button) {
+            positionSymbol.value = button.dataset.symbol || "";
+            positionEntry.value = button.dataset.entry || "";
+            positionCapital.value = button.dataset.capital || "";
+            positionShares.value = button.dataset.shares || "";
+            positionTradeType.value = button.dataset.tradeType || "swing";
+            positionNotes.value = button.dataset.notes || "";
+            positionSymbol.focus();
         }
 
         function renderActivePositionDetails(stock) {
@@ -836,7 +931,8 @@ Main changes:
 
                 const data = await response.json();
                 lastUpdated.textContent = data.last_updated;
-                renderActivePosition(data.active_position);
+                renderActivePosition(data.active_positions);
+                renderActiveTradesSummary(data.active_trades);
                 replaceScannerRows(data.stocks, openSymbols);
                 refreshStatus.textContent = "Updated";
             } catch (error) {
@@ -881,6 +977,14 @@ Main changes:
         watchOnly.addEventListener("change", applyFilters);
         sniperOnly.addEventListener("change", applyFilters);
         refreshDataBtn.addEventListener("click", refreshScannerData);
+
+        activeTradesSummary.addEventListener("click", function (event) {
+            const button = event.target.closest(".edit-position-btn");
+
+            if (button) {
+                fillPositionFormFromButton(button);
+            }
+        });
 
         setInterval(refreshScannerData, REFRESH_INTERVAL_MS);
     </script>

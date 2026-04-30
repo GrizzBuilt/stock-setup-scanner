@@ -18,9 +18,10 @@ from db import (
     get_watchlist,
     add_symbol,
     remove_symbol,
-    get_active_position,
+    get_active_positions,
     set_active_position,
     clear_active_position,
+    exit_active_position,
 )
 
 app = Flask(__name__)
@@ -726,31 +727,34 @@ def build_position_verdict(
     }
 
 
-def apply_active_position_to_stocks(stocks, active_position):
+def apply_active_position_to_stocks(stocks, active_positions):
     for stock in stocks:
         add_empty_position_fields(stock)
 
-    if not active_position:
+    if not active_positions:
         return stocks
 
-    active_symbol = active_position["symbol"].upper().strip()
-    actual_entry = float(active_position["entry"])
-    shares = float(active_position["shares"])
-    capital_in = float(active_position.get("capital") or (actual_entry * shares))
-
-    found_active_row = False
+    active_by_symbol = {
+        active_position["symbol"].upper().strip(): active_position
+        for active_position in active_positions
+    }
 
     for stock in stocks:
         symbol = stock.get("symbol", "").upper().strip()
+        active_position = active_by_symbol.get(symbol)
 
-        if symbol != active_symbol:
-            stock["active_position_warning"] = (
-                f"ACTIVE POSITION IS {active_symbol} — THIS ROW IS {symbol}"
-            )
+        if not active_position:
             continue
 
-        found_active_row = True
+        actual_entry = float(active_position["entry"])
+        shares = float(active_position["shares"])
+        capital_in = float(active_position.get("capital") or (actual_entry * shares))
+
         stock["is_active_position"] = True
+        stock["active_position_id"] = active_position.get("id", "")
+        stock["active_position_trade_type"] = active_position.get("trade_type", "swing")
+        stock["active_position_entry_date"] = active_position.get("entry_date", "")
+        stock["active_position_notes"] = active_position.get("notes", "")
         stock["actual_entry"] = round(actual_entry, 2)
         stock["actual_shares"] = round(shares, 5)
         stock["capital_in"] = round(capital_in, 2)
@@ -776,13 +780,57 @@ def apply_active_position_to_stocks(stocks, active_position):
 
         stock.update(position_data)
 
-    if not found_active_row:
-        for stock in stocks:
-            stock["active_position_warning"] = (
-                f"ACTIVE POSITION IS {active_symbol}, BUT IT IS NOT IN THIS WATCHLIST"
+    return stocks
+
+
+def build_active_trades_summary(stocks, active_positions):
+    stocks_by_symbol = {
+        stock.get("symbol", "").upper().strip(): stock
+        for stock in stocks
+    }
+
+    summaries = []
+
+    for active_position in active_positions:
+        symbol = active_position["symbol"].upper().strip()
+        stock = stocks_by_symbol.get(symbol)
+
+        if stock and stock.get("is_active_position"):
+            summaries.append(
+                {
+                    "symbol": symbol,
+                    "entry": stock.get("actual_entry", ""),
+                    "current_price": stock.get("price", ""),
+                    "capital_in": stock.get("capital_in", ""),
+                    "shares": stock.get("actual_shares", ""),
+                    "actual_pl": stock.get("actual_pl", ""),
+                    "percent_gain": stock.get("percent_gain", ""),
+                    "verdict": stock.get("position_verdict", ""),
+                    "green_protect": stock.get("green_protect", ""),
+                    "trade_type": active_position.get("trade_type", "swing"),
+                    "entry_date": active_position.get("entry_date", ""),
+                    "notes": active_position.get("notes", ""),
+                }
+            )
+        else:
+            summaries.append(
+                {
+                    "symbol": symbol,
+                    "entry": round(float(active_position["entry"]), 2),
+                    "current_price": "",
+                    "capital_in": round(float(active_position["capital"]), 2),
+                    "shares": round(float(active_position["shares"]), 5),
+                    "actual_pl": "",
+                    "percent_gain": "",
+                    "verdict": "ACTIVE POSITION NOT IN WATCHLIST",
+                    "green_protect": "",
+                    "trade_type": active_position.get("trade_type", "swing"),
+                    "entry_date": active_position.get("entry_date", ""),
+                    "notes": active_position.get("notes", ""),
+                }
             )
 
-    return stocks
+    return summaries
 
 
 def get_quick_stock_data(symbol):
@@ -1657,17 +1705,19 @@ def add_focus_labels(stocks):
 
 def build_scanner_payload(mode):
     symbols = get_watchlist()
-    active_position = get_active_position()
+    active_positions = get_active_positions()
 
     stocks = [get_stock_data(s, mode) for s in symbols]
-    stocks = apply_active_position_to_stocks(stocks, active_position)
+    stocks = apply_active_position_to_stocks(stocks, active_positions)
 
     stocks.sort(key=scanner_sort_key)
     stocks = add_focus_labels(stocks)
+    active_trades = build_active_trades_summary(stocks, active_positions)
 
     return {
         "stocks": stocks,
-        "active_position": active_position,
+        "active_positions": active_positions,
+        "active_trades": active_trades,
         "mode": mode,
         "last_updated": datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     }
@@ -1681,7 +1731,8 @@ def home():
     return render_template(
         "index.html",
         stocks=payload["stocks"],
-        active_position=payload["active_position"],
+        active_positions=payload["active_positions"],
+        active_trades=payload["active_trades"],
         mode=payload["mode"],
         last_updated=payload["last_updated"],
     )
@@ -1701,6 +1752,8 @@ def set_position():
     entry_raw = request.form.get("position_entry", "").strip()
     shares_raw = request.form.get("position_shares", "").strip()
     capital_raw = request.form.get("position_capital", "").strip()
+    trade_type = request.form.get("position_trade_type", "swing").strip()
+    notes = request.form.get("position_notes", "").strip()
 
     try:
         entry = float(entry_raw)
@@ -1708,11 +1761,26 @@ def set_position():
         capital = float(capital_raw) if capital_raw else 0
 
         if symbol and entry > 0 and (shares > 0 or capital > 0):
-            set_active_position(symbol, entry, shares=shares, capital=capital)
+            set_active_position(
+                symbol,
+                entry,
+                shares=shares,
+                capital=capital,
+                trade_type=trade_type,
+                notes=notes,
+            )
 
     except ValueError:
         pass
 
+    return redirect(url_for("home", mode=mode))
+
+
+@app.route("/position/exit/<symbol>", methods=["POST"])
+def exit_position(symbol):
+    mode = normalize_mode(request.form.get("mode", "quick"))
+    exit_price = request.form.get("exit_price", "").strip()
+    exit_active_position(symbol, exit_price=exit_price)
     return redirect(url_for("home", mode=mode))
 
 
