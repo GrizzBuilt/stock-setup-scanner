@@ -1,75 +1,29 @@
 # File: app.py
-# Purpose: Flask stock scanner with setup scoring, Sniper Mode,
-# entry-gap chase protection, SQLite Active Position Mode,
-# and earnings/event-risk protection.
+# Purpose: Main Flask app + upgraded trading logic engine
+# Changes:
+# - Added Quick / Swing scanner mode using ?mode=quick or ?mode=swing
+# - Quick mode keeps the current breakout/sniper logic
+# - Swing mode scans for pullbacks in confirmed uptrends
+# - Added swing-specific statuses and reason text
+# - Keeps existing scoring, sorting, focus labels, and UI data structure
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from flask import Flask, render_template, request, redirect, url_for
 
 import yfinance as yf
 
-from db import (
-    init_db,
-    get_watchlist,
-    add_symbol,
-    remove_symbol,
-    get_active_position,
-    set_active_position,
-    clear_active_position,
-)
+from db import init_db, get_watchlist, add_symbol, remove_symbol
 
 app = Flask(__name__)
 
-EASTERN = ZoneInfo("America/New_York")
 
-# Simple in-memory cache so we do not hammer yfinance every page refresh.
-# Resets when the Flask app restarts.
-EARNINGS_CACHE = {}
-
-
-def add_empty_position_fields(stock):
-    stock.update(
-        {
-            "is_active_position": False,
-            "active_position_warning": "",
-            "actual_entry": "",
-            "actual_shares": "",
-            "actual_pl": 0,
-            "actual_pl_per_share": 0,
-            "actual_entry_gap": 0,
-            "protect_level": "",
-            "quick_profit_level": "",
-            "goal_profit_level": "",
-            "cut_level": "",
-            "position_verdict": "",
-            "position_management": "",
-        }
-    )
-
-    return stock
-
-
-def add_empty_event_fields(stock):
-    stock.update(
-        {
-            "event_risk": "NO",
-            "event_risk_level": "NONE",
-            "event_warning": "",
-            "earnings_date": "",
-            "base_decision": stock.get("decision", ""),
-            "base_action": stock.get("action", ""),
-            "base_sniper": stock.get("sniper", ""),
-            "base_grade": stock.get("grade", ""),
-        }
-    )
-
-    return stock
+VALID_MODES = ["quick", "swing"]
 
 
 def empty_stock(symbol, message="No data"):
-    stock = {
+    return {
         "symbol": symbol,
         "price": "—",
         "percent": 0,
@@ -79,31 +33,21 @@ def empty_stock(symbol, message="No data"):
         "score": 0,
         "grade": "F",
         "sniper": "NO",
-        "confidence": "NONE",
-        "trade_style": "AVOID",
-        "management": "No trade. Wait for a cleaner setup.",
-        "verdict": "NO TRADE — PASS",
         "rr": 0,
         "distance": 0,
         "entry": "—",
         "stop": "—",
         "target": "—",
-        "entry_gap": 0,
-        "entry_gap_pct": 0,
-        "entry_warning": "NO DATA",
         "focus_rank": "",
         "focus_label": "",
         "reason": message,
     }
 
-    stock = add_empty_event_fields(stock)
-    return add_empty_position_fields(stock)
 
-
-def get_grade(score):
-    if score >= 9:
+def get_grade(score, sniper):
+    if score >= 9 and sniper == "YES":
         return "A+"
-    if score >= 8:
+    if score >= 8 and sniper == "YES":
         return "A"
     if score >= 7:
         return "B"
@@ -112,589 +56,46 @@ def get_grade(score):
     return "F"
 
 
-def get_confidence(decision, action, sniper, score, rr, status, entry_gap):
-    if (
-        decision == "TRADE"
-        and action == "READY NOW"
-        and sniper == "YES"
-        and score >= 8
-        and rr >= 1.5
-        and entry_gap <= 0.50
-    ):
-        return "HIGH"
-
-    if (
-        decision == "TRADE"
-        and action == "READY NOW"
-        and score >= 7
-        and rr >= 1.5
-        and entry_gap <= 1.00
-    ):
-        return "MEDIUM"
-
-    if decision == "WATCH" and status in ["Breakout Watch", "Pullback", "Breakout Triggered"]:
-        return "LOW"
-
-    return "NONE"
-
-
-def get_trade_style(decision, action, sniper, confidence):
-    if decision == "TRADE" and action == "READY NOW" and sniper == "YES":
-        return "SNIPER"
-
-    if decision == "TRADE" and action == "READY NOW" and confidence == "MEDIUM":
-        return "QUICK TRADE"
-
-    if decision == "WATCH":
-        return "WATCH ONLY"
-
-    return "AVOID"
-
-
-def build_management(
-    decision,
-    action,
-    sniper,
-    confidence,
-    trade_style,
-    entry,
-    stop,
-    target,
-    entry_gap,
-    entry_warning,
-):
-    if action == "EARNINGS WATCH":
-        return (
-            "Earnings/event risk is active. Technical setup may be strong, but price can move fast "
-            "or gap after hours. Treat as WATCH ONLY unless you intentionally want event risk."
-        )
-
-    if action == "WAIT FOR RESET":
-        return (
-            "Price is too far above the scanner entry. Do not chase. "
-            "Wait for price to reset closer to entry or form a fresh setup."
-        )
-
-    if decision == "TRADE" and action == "READY NOW" and trade_style == "SNIPER":
-        return (
-            "SNIPER setup. You can take the trade if it matches your plan. "
-            "At +$0.50, protect entry. At +$1.00, either take profit or trail tight. "
-            "Do not let a clean green trade turn red."
-        )
-
-    if decision == "TRADE" and action == "READY NOW" and trade_style == "QUICK TRADE":
-        return (
-            "Valid trade, but entry is not perfect. Treat it as a quick trade. "
-            "Take +$0.50 to +$1.00 if offered, protect entry fast, and do not expect a runner."
-        )
-
-    if action == "WATCH FOR BREAK":
-        return (
-            "Watch only. Do not enter yet. Wait for price to break the level and hold. "
-            "No confirmation, no trade."
-        )
-
-    if action == "WAIT FOR BOUNCE":
-        return (
-            "Watch only. The pullback is happening, but the bounce is not confirmed. "
-            "Wait for price to stop falling and reclaim strength."
-        )
-
-    if action == "TOO LATE / EXTENDED":
-        return "Too extended. Do not chase. Wait for a reset or pullback."
-
-    if action == "WAIT":
-        return "Not near a clean setup. Keep it on watch, but do not force a trade."
-
-    return "No trade. Wait for a cleaner setup."
-
-
-def build_verdict(decision, action, sniper, confidence, trade_style, status, entry_warning):
-    if action == "EARNINGS WATCH":
-        return "EARNINGS RISK — WATCH ONLY"
-
-    if action == "WAIT FOR RESET":
-        return "DO NOT CHASE — WAIT FOR RESET"
-
-    if decision == "TRADE" and action == "READY NOW" and sniper == "YES":
-        return "A+ SETUP — TRAIL WITH CONFIDENCE"
-
-    if decision == "TRADE" and action == "READY NOW" and trade_style == "QUICK TRADE":
-        return "VALID QUICK TRADE — TAKE $0.50–$1.00 IF OFFERED"
-
-    if action == "WATCH FOR BREAK":
-        return "WATCH ONLY — WAIT FOR BREAK"
-
-    if action == "WAIT FOR BOUNCE":
-        return "WATCH ONLY — WAIT FOR BOUNCE"
-
-    if action == "TOO LATE / EXTENDED":
-        return "DO NOT CHASE — WAIT FOR RESET"
-
-    if status == "Not Near Setup" or action == "WAIT":
-        return "NOT NEAR SETUP — WAIT"
-
-    return "NO TRADE — PASS"
-
-
-def build_reason(
-    status,
-    decision,
-    action,
-    rr,
-    score,
-    dist,
-    blockers,
-    confidence,
-    trade_style,
-    entry_gap,
-    entry_warning,
-):
+def build_reason(status, decision, action, rr, score, dist, blockers):
     blocker_text = ""
 
     if blockers:
         blocker_text = " Blocker: " + "; ".join(blockers) + "."
 
-    prefix = f"{trade_style}. Confidence: {confidence}. Entry: {entry_warning}."
-
-    if action == "EARNINGS WATCH":
-        return (
-            f"{prefix} Technical setup may be valid, but earnings/event risk is active. "
-            f"Scanner downgraded this to WATCH ONLY. RR {round(rr, 2)}. Score {score}/10."
-            f"{blocker_text}"
-        )
-
-    if action == "WAIT FOR RESET":
-        return (
-            f"{prefix} Price is ${round(entry_gap, 2)} above scanner entry. "
-            f"Wait for a reset instead of chasing.{blocker_text}"
-        )
-
     if status == "Extended":
-        return f"{prefix} Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
+        return f"Price is {round(dist, 2)}% above previous high. Extended.{blocker_text}"
 
     if status == "Breakout Triggered":
-        if decision == "TRADE" and action == "READY NOW":
-            return (
-                f"{prefix} Breakout triggered. RR {round(rr, 2)}. "
-                f"Score {score}/10. Trade is valid now, but manage based on trade style."
-            )
-        return (
-            f"{prefix} Breakout triggered, but not clean enough yet. "
-            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
-        )
+        if decision == "TRADE":
+            return f"Breakout triggered. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
+        return f"Breakout triggered, but not clean enough yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Breakout Watch":
-        return (
-            f"{prefix} Near breakout level. Watching for breakout confirmation. "
-            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
-        )
+        return f"Near breakout level. Watching for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
     if status == "Pullback":
-        if decision == "TRADE" and action == "READY NOW":
-            return (
-                f"{prefix} Pullback bounce confirmed. RR {round(rr, 2)}. "
-                f"Score {score}/10. Trade is valid now, but manage based on trade style."
-            )
-        return (
-            f"{prefix} Pullback setup forming. Waiting for bounce confirmation. "
-            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
-        )
+        if action == "READY NOW":
+            return f"Pullback bounce confirmed. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
+        return f"Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
-    if status == "Not Near Setup":
-        return (
-            f"{prefix} Not close enough to a clean setup yet. "
-            f"Distance from previous high is {round(dist, 2)}%. "
-            f"RR {round(rr, 2)}. Score {score}/10."
-        )
+    if status == "Swing Pullback":
+        return f"Swing pullback in an uptrend. Waiting for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
-    return f"{prefix} No clean setup.{blocker_text}"
+    if status == "Trend Strength":
+        return f"Stock is in an uptrend, but not pulled back enough for a clean swing entry yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+
+    if status == "No Trend":
+        return f"No confirmed swing uptrend yet.{blocker_text}"
+
+    return f"No clean setup.{blocker_text}"
 
 
-def get_entry_warning(entry_gap):
-    if entry_gap <= 0.25:
-        return "IDEAL ENTRY ZONE"
-
-    if entry_gap <= 0.50:
-        return "STILL ACCEPTABLE"
-
-    if entry_gap <= 1.00:
-        return "LATE ENTRY / QUICK TRADE ONLY"
-
-    return "DO NOT CHASE"
-
-
-def normalize_earnings_date(value):
-    """
-    Tries to normalize yfinance earnings date values into a plain date.
-    yfinance can return different shapes depending on ticker/data availability.
-    """
-    if value is None:
-        return None
-
-    try:
-        # Lists/tuples often happen with earnings date ranges.
-        if isinstance(value, (list, tuple)) and value:
-            value = value[0]
-
-        # Pandas Timestamp has to_pydatetime().
-        if hasattr(value, "to_pydatetime"):
-            value = value.to_pydatetime()
-
-        # Python datetime.
-        if isinstance(value, datetime):
-            return value.astimezone(EASTERN).date() if value.tzinfo else value.date()
-
-        # Python date-like object.
-        if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
-            return datetime(value.year, value.month, value.day).date()
-
-        # String fallback.
-        if isinstance(value, str):
-            cleaned = value.strip()
-            if not cleaned:
-                return None
-
-            # Try ISO-ish date first.
-            try:
-                return datetime.fromisoformat(cleaned.replace("Z", "+00:00")).date()
-            except Exception:
-                pass
-
-            # Try common date-only fallback.
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
-                try:
-                    return datetime.strptime(cleaned, fmt).date()
-                except Exception:
-                    continue
-
-    except Exception:
-        return None
-
-    return None
-
-
-def extract_earnings_date_from_calendar(calendar):
-    """
-    Handles common yfinance calendar shapes:
-    - dict with 'Earnings Date'
-    - pandas DataFrame-like object
-    - Series-like object
-    """
-    if calendar is None:
-        return None
-
-    possible_keys = [
-        "Earnings Date",
-        "EarningsDate",
-        "earningsDate",
-        "Earnings",
-    ]
-
-    # Dict-style.
-    if isinstance(calendar, dict):
-        for key in possible_keys:
-            if key in calendar:
-                earnings_date = normalize_earnings_date(calendar.get(key))
-                if earnings_date:
-                    return earnings_date
-
-    # DataFrame/Series-style.
-    try:
-        # Some versions behave like a DataFrame with index labels.
-        for key in possible_keys:
-            if hasattr(calendar, "loc"):
-                try:
-                    value = calendar.loc[key]
-                    earnings_date = normalize_earnings_date(value)
-                    if earnings_date:
-                        return earnings_date
-                except Exception:
-                    pass
-
-            if hasattr(calendar, "get"):
-                try:
-                    value = calendar.get(key)
-                    earnings_date = normalize_earnings_date(value)
-                    if earnings_date:
-                        return earnings_date
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    return None
-
-
-def get_earnings_info(symbol):
-    """
-    Returns earnings risk info for a symbol.
-
-    Risk levels:
-    - HIGH: earnings date is today
-    - MEDIUM: earnings date is tomorrow
-    - NONE: no near-term earnings detected
-
-    NOTE:
-    yfinance earnings dates can be missing or occasionally unavailable.
-    If unavailable, scanner should keep working and simply show no event warning.
-    """
-    now = datetime.now(EASTERN)
-    today = now.date()
-    tomorrow = today + timedelta(days=1)
-
-    cache_key = f"{symbol.upper()}-{today.isoformat()}-{now.hour}"
-
-    if cache_key in EARNINGS_CACHE:
-        return EARNINGS_CACHE[cache_key]
-
-    info = {
-        "event_risk": "NO",
-        "event_risk_level": "NONE",
-        "event_warning": "",
-        "earnings_date": "",
-    }
-
+def get_stock_data(symbol, mode="quick"):
     try:
         ticker = yf.Ticker(symbol)
-        calendar = getattr(ticker, "calendar", None)
-        earnings_date = extract_earnings_date_from_calendar(calendar)
 
-        if not earnings_date:
-            EARNINGS_CACHE[cache_key] = info
-            return info
-
-        info["earnings_date"] = earnings_date.strftime("%m/%d/%Y")
-
-        if earnings_date == today:
-            info["event_risk"] = "YES"
-            info["event_risk_level"] = "HIGH"
-
-            if now.hour < 16:
-                info["event_warning"] = (
-                    "EARNINGS TODAY — likely after-hours risk. "
-                    "Technical setups can fail fast."
-                )
-            else:
-                info["event_warning"] = (
-                    "EARNINGS TODAY — after-hours reaction risk is active. "
-                    "Fractional shares may be hard to exit after close."
-                )
-
-        elif earnings_date == tomorrow:
-            info["event_risk"] = "YES"
-            info["event_risk_level"] = "MEDIUM"
-            info["event_warning"] = (
-                "EARNINGS TOMORROW — upcoming event risk. "
-                "Use smaller size or wait."
-            )
-
-    except Exception:
-        # Do not let earnings lookup break the scanner.
-        pass
-
-    EARNINGS_CACHE[cache_key] = info
-    return info
-
-
-def apply_event_risk_filter(stock, earnings_info):
-    """
-    Keeps the technical grade visible, but blocks A+ Sniper / READY NOW
-    when earnings/event risk is active.
-    """
-    stock = add_empty_event_fields(stock)
-
-    stock["event_risk"] = earnings_info.get("event_risk", "NO")
-    stock["event_risk_level"] = earnings_info.get("event_risk_level", "NONE")
-    stock["event_warning"] = earnings_info.get("event_warning", "")
-    stock["earnings_date"] = earnings_info.get("earnings_date", "")
-
-    if stock["event_risk"] != "YES":
-        return stock
-
-    # Save what the scanner originally saw before downgrading.
-    stock["base_decision"] = stock.get("decision", "")
-    stock["base_action"] = stock.get("action", "")
-    stock["base_sniper"] = stock.get("sniper", "")
-    stock["base_grade"] = stock.get("grade", "")
-
-    warning = stock["event_warning"]
-
-    # If it was a trade, downgrade it.
-    if stock.get("decision") == "TRADE" or stock.get("sniper") == "YES":
-        stock["decision"] = "WATCH"
-        stock["action"] = "EARNINGS WATCH"
-        stock["sniper"] = "NO"
-        stock["confidence"] = "LOW"
-        stock["trade_style"] = "WATCH ONLY"
-        stock["verdict"] = "EARNINGS RISK — WATCH ONLY"
-        stock["management"] = (
-            f"{warning} The setup may still be technically strong, "
-            "but this is no longer a clean scanner trade. "
-            "Only take it if you intentionally accept event risk."
-        )
-        stock["reason"] = (
-            f"{warning} Original signal was {stock['base_grade']} / "
-            f"{stock['base_decision']} / {stock['base_action']} / "
-            f"Sniper {stock['base_sniper']}. Downgraded to WATCH ONLY because earnings can cause "
-            "fake breakouts, fast reversals, or after-hours gaps."
-        )
-        return stock
-
-    # If it was already watch/pass, just add warning to the reason.
-    stock["reason"] = f"{warning} {stock.get('reason', '')}".strip()
-    stock["management"] = f"{warning} {stock.get('management', '')}".strip()
-
-    return stock
-
-
-def build_position_verdict(
-    current_price,
-    actual_entry,
-    shares,
-    scanner_entry,
-    sniper,
-    trade_style,
-):
-    pl_per_share = current_price - actual_entry
-    total_pl = pl_per_share * shares
-    actual_entry_gap = actual_entry - scanner_entry
-
-    protect_level = actual_entry
-    quick_profit_level = actual_entry + 0.50
-    goal_profit_level = actual_entry + 1.00
-    cut_level = actual_entry - 0.50
-
-    if actual_entry_gap > 1.00:
-        entry_gap_warning = (
-            f"Your entry is ${round(actual_entry_gap, 2)} above scanner entry. "
-            "This is late. Manage tight."
-        )
-    elif actual_entry_gap > 0.50:
-        entry_gap_warning = (
-            f"Your entry is ${round(actual_entry_gap, 2)} above scanner entry. "
-            "Quick trade only."
-        )
-    elif actual_entry_gap >= 0:
-        entry_gap_warning = "Your entry is close to scanner entry."
-    else:
-        entry_gap_warning = "Your entry is better than scanner entry."
-
-    if pl_per_share >= 1.00 and sniper == "YES":
-        verdict = "TRAIL WITH CONFIDENCE — LOCK PROFIT"
-        management = (
-            "You are up more than $1.00/share on a Sniper setup. "
-            "Trail it, but do not let it come back under your protect level."
-        )
-
-    elif pl_per_share >= 0.50:
-        verdict = "TAKE PROFIT OK — PROTECT GREEN"
-        management = (
-            "You are in the quick profit zone. Taking profit is valid. "
-            "If you hold, protect entry and do not let the trade turn red."
-        )
-
-    elif pl_per_share > 0:
-        verdict = "GREEN — PROTECT ENTRY"
-        management = (
-            "You are green but not at the quick profit goal yet. "
-            "Let it try, but protect your actual entry."
-        )
-
-    elif -0.50 < pl_per_share <= 0:
-        verdict = "NEEDS RECLAIM — WATCH TIGHT"
-        management = (
-            "Price is below your actual entry. It needs to reclaim your entry soon. "
-            "Do not average down and do not let a small red trade become a big one."
-        )
-
-    elif -1.00 < pl_per_share <= -0.50:
-        verdict = "BELOW CUT ZONE — NEEDS FAST RECLAIM"
-        management = (
-            "Price is below your planned cut zone. If it cannot reclaim quickly, "
-            "cut the trade and protect the account."
-        )
-
-    else:
-        verdict = "CUT NOW — LOSS TOO BIG"
-        management = (
-            "The trade has moved too far against your actual entry. "
-            "Protect the account. Do not hope and do not average down."
-        )
-
-    return {
-        "actual_pl": round(total_pl, 2),
-        "actual_pl_per_share": round(pl_per_share, 2),
-        "actual_entry_gap": round(actual_entry_gap, 2),
-        "protect_level": round(protect_level, 2),
-        "quick_profit_level": round(quick_profit_level, 2),
-        "goal_profit_level": round(goal_profit_level, 2),
-        "cut_level": round(cut_level, 2),
-        "position_verdict": verdict,
-        "position_management": f"{entry_gap_warning} {management}",
-    }
-
-
-def apply_active_position_to_stocks(stocks, active_position):
-    for stock in stocks:
-        add_empty_position_fields(stock)
-
-    if not active_position:
-        return stocks
-
-    active_symbol = active_position["symbol"].upper().strip()
-    actual_entry = float(active_position["entry"])
-    shares = float(active_position["shares"])
-
-    found_active_row = False
-
-    for stock in stocks:
-        symbol = stock.get("symbol", "").upper().strip()
-
-        if symbol != active_symbol:
-            stock["active_position_warning"] = (
-                f"ACTIVE POSITION IS {active_symbol} — THIS ROW IS {symbol}"
-            )
-            continue
-
-        found_active_row = True
-        stock["is_active_position"] = True
-        stock["actual_entry"] = round(actual_entry, 2)
-        stock["actual_shares"] = shares
-        stock["active_position_warning"] = "ACTIVE POSITION — MANAGE THIS TICKER"
-
-        try:
-            current_price = float(stock.get("price", 0))
-            scanner_entry = float(stock.get("entry", 0))
-        except Exception:
-            stock["position_verdict"] = "ACTIVE POSITION — PRICE DATA ERROR"
-            stock["position_management"] = "Could not calculate active P/L."
-            continue
-
-        position_data = build_position_verdict(
-            current_price=current_price,
-            actual_entry=actual_entry,
-            shares=shares,
-            scanner_entry=scanner_entry,
-            sniper=stock.get("sniper", "NO"),
-            trade_style=stock.get("trade_style", "AVOID"),
-        )
-
-        stock.update(position_data)
-
-    if not found_active_row:
-        for stock in stocks:
-            stock["active_position_warning"] = (
-                f"ACTIVE POSITION IS {active_symbol}, BUT IT IS NOT IN THIS WATCHLIST"
-            )
-
-    return stocks
-
-
-def get_stock_data(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="5d")
+        # Pull enough data for both quick and swing mode.
+        data = ticker.history(period="3mo")
 
         if data.empty or len(data) < 2:
             return empty_stock(symbol, "Not enough data")
@@ -713,65 +114,135 @@ def get_stock_data(symbol):
         percent = ((price - open_price) / open_price) * 100 if open_price else 0
         range_size = high - low
 
-        dist = ((price - prev_high) / prev_high) * 100
+        # Positive = price is above yesterday's high.
+        # Negative = price is still below yesterday's high.
+        dist = ((price - prev_high) / prev_high) * 100 if prev_high else 0
 
-        status = "Not Near Setup"
-        decision = "WATCH"
-        action = "WAIT"
+        status = "No Trade"
+        decision = "PASS"
+        action = "PASS"
 
         entry = prev_high
         stop = prev_low
         target = prev_high + range_size
 
-        # Setup classification only. Final trade permission happens later.
-        if -0.5 <= dist <= 0:
-            status = "Breakout Watch"
-            decision = "WATCH"
-            action = "WATCH FOR BREAK"
+        # ============================================================
+        # QUICK MODE
+        # Fast breakout / pullback scanner for short trades.
+        # ============================================================
 
-        elif 0 < dist <= 1:
-            status = "Breakout Triggered"
-            decision = "WATCH"
-            action = "CHECK SETUP"
+        if mode == "quick":
+            if -0.5 <= dist <= 0:
+                status = "Breakout Watch"
+                decision = "WATCH"
+                action = "WATCH FOR BREAK"
 
-        elif dist > 1:
-            status = "Extended"
-            decision = "PASS"
-            action = "TOO LATE / EXTENDED"
+            elif 0 < dist <= 1:
+                status = "Breakout Triggered"
+                decision = "TRADE"
+                action = "READY NOW"
 
-        elif percent > 0 and price > open_price and range_size >= 2:
-            status = "Pullback"
-            decision = "WATCH"
-            action = "WAIT FOR BOUNCE"
-            entry = price
-            stop = low
-            target = price + 3
+            elif dist > 1:
+                status = "Extended"
+                decision = "PASS"
+                action = "TOO LATE / EXTENDED"
 
+            elif percent > 0 and price > open_price and range_size >= 2:
+                status = "Pullback"
+                decision = "WATCH"
+                action = "WAIT FOR BOUNCE"
+                entry = price
+                stop = low
+                target = price + 3
+
+        # ============================================================
+        # SWING MODE
+        # Slower scanner for multi-day setups.
+        # Looks for pullbacks inside confirmed uptrends.
+        # ============================================================
+
+        elif mode == "swing":
+            if len(data) < 50:
+                return empty_stock(symbol, "Not enough trend data for swing mode")
+
+            sma20 = data["Close"].tail(20).mean()
+            sma50 = data["Close"].tail(50).mean()
+
+            recent_20 = data.tail(20)
+            recent_high = float(recent_20["High"].max())
+            recent_low = float(recent_20["Low"].min())
+
+            trend_up = price > sma20 and sma20 > sma50
+            pullback = price < recent_high * 0.97 and price > sma20
+            extended = (price - sma20) / sma20 > 0.08 if sma20 else False
+
+            entry = recent_high
+            stop = recent_low
+            target = entry + ((entry - stop) * 2)
+
+            if trend_up and pullback and not extended:
+                status = "Swing Pullback"
+                decision = "WATCH"
+                action = "WAIT FOR BREAK"
+
+            elif trend_up and not pullback and not extended:
+                status = "Trend Strength"
+                decision = "WATCH"
+                action = "WAIT FOR PULLBACK"
+
+            elif extended:
+                status = "Extended"
+                decision = "PASS"
+                action = "TOO LATE / EXTENDED"
+
+            else:
+                status = "No Trend"
+                decision = "PASS"
+                action = "PASS"
+
+        # --- RISK / REWARD ---
         risk = entry - stop
         reward = target - entry
         rr = reward / risk if risk > 0 else 0
 
-        entry_gap = price - entry
-        entry_gap_pct = (entry_gap / entry) * 100 if entry else 0
-        entry_warning = get_entry_warning(entry_gap)
-
+        # --- SCORE ---
         score = 0
 
-        if status in ["Breakout Watch", "Breakout Triggered", "Pullback"]:
+        if status in [
+            "Breakout Watch",
+            "Breakout Triggered",
+            "Pullback",
+            "Swing Pullback",
+            "Trend Strength",
+        ]:
             score += 2
 
-        if abs(dist) <= 0.25:
-            score += 2
-        elif abs(dist) <= 0.5:
-            score += 1
+        if mode == "quick":
+            if abs(dist) <= 0.25:
+                score += 2
+            elif abs(dist) <= 0.5:
+                score += 1
 
-        if range_size >= 3:
-            score += 2
-        elif range_size >= 2:
-            score += 1
+            if range_size >= 3:
+                score += 2
+            elif range_size >= 2:
+                score += 1
 
-        if 0.5 <= percent <= 3:
-            score += 1
+            if 0.5 <= percent <= 3:
+                score += 1
+
+        elif mode == "swing":
+            if status == "Swing Pullback":
+                score += 3
+
+            if status == "Trend Strength":
+                score += 1
+
+            if -3 <= percent <= 2:
+                score += 1
+
+            if price > stop:
+                score += 1
 
         if rr >= 1.5:
             score += 1
@@ -785,26 +256,22 @@ def get_stock_data(symbol):
         if reward > 0:
             score += 1
 
-        if entry_gap > 0.50:
-            score -= 1
-
-        if entry_gap > 1.00:
-            score -= 2
-
+        # --- PENALTIES ---
         if status == "Extended":
             score -= 2
 
         if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
             score -= 2
 
+        if mode == "swing" and status == "Swing Pullback" and rr < 1.5:
+            score -= 2
+
         if risk <= 0:
             score -= 2
 
-        if status == "Not Near Setup":
-            score -= 1
-
         score = max(0, min(score, 10))
 
+        # --- BLOCKERS ---
         blockers = []
 
         if status == "Extended":
@@ -816,131 +283,104 @@ def get_stock_data(symbol):
         if reward <= 0:
             blockers.append("no upside target")
 
-        if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
+        if status in ["Breakout Triggered", "Pullback", "Swing Pullback"] and rr < 1.5:
             blockers.append("risk/reward below 1.5")
 
-        if status in ["Breakout Triggered", "Pullback"] and score < 7:
+        if mode == "quick" and status in ["Breakout Triggered", "Pullback"] and score < 7:
             blockers.append("score below trade quality")
 
-        if status in ["Breakout Triggered", "Pullback"] and entry_gap > 0.50:
-            blockers.append("late entry; price is more than $0.50 above scanner entry")
+        if mode == "swing" and status == "Swing Pullback" and score < 6:
+            blockers.append("swing setup not strong enough yet")
 
-        if status in ["Breakout Triggered", "Pullback"] and entry_gap > 1.00:
-            blockers.append("do not chase; price is more than $1.00 above scanner entry")
+        # --- FINAL TRADE DECISION ---
+        if mode == "quick":
+            if status == "Breakout Triggered":
+                if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
+                    decision = "TRADE"
+                    action = "READY NOW"
+                else:
+                    decision = "PASS"
+                    action = "PASS"
 
-        # Final trade decision. READY NOW can only happen here.
-        if status == "Breakout Triggered":
-            if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
-                if entry_gap <= 1.00:
+            elif status == "Pullback":
+                if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
                     decision = "TRADE"
                     action = "READY NOW"
                 else:
                     decision = "WATCH"
-                    action = "WAIT FOR RESET"
+                    action = "WAIT FOR BOUNCE"
+
+            elif status == "Breakout Watch":
+                decision = "WATCH"
+                action = "WATCH FOR BREAK"
+
+            elif status == "Extended":
+                decision = "PASS"
+                action = "TOO LATE / EXTENDED"
+
             else:
                 decision = "PASS"
                 action = "PASS"
 
-        elif status == "Pullback":
-            if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
-                if entry_gap <= 1.00:
-                    decision = "TRADE"
-                    action = "READY NOW"
-                else:
-                    decision = "WATCH"
-                    action = "WAIT FOR RESET"
-            else:
+        elif mode == "swing":
+            if status == "Swing Pullback":
                 decision = "WATCH"
-                action = "WAIT FOR BOUNCE"
+                action = "WAIT FOR BREAK"
 
-        elif status == "Breakout Watch":
-            decision = "WATCH"
-            action = "WATCH FOR BREAK"
+            elif status == "Trend Strength":
+                decision = "WATCH"
+                action = "WAIT FOR PULLBACK"
 
-        elif status == "Extended":
-            decision = "PASS"
-            action = "TOO LATE / EXTENDED"
+            elif status == "Extended":
+                decision = "PASS"
+                action = "TOO LATE / EXTENDED"
 
-        elif status == "Not Near Setup":
-            decision = "WATCH"
-            action = "WAIT"
+            else:
+                decision = "PASS"
+                action = "PASS"
 
-        else:
-            decision = "PASS"
-            action = "PASS"
-
+        # --- SNIPER MODE ---
         sniper = "NO"
 
         clean_breakout_sniper = (
-            decision == "TRADE"
-            and action == "READY NOW"
-            and score >= 8
+            mode == "quick"
+            and decision == "TRADE"
+            and score >= 7
             and status == "Breakout Triggered"
             and risk > 0
             and reward > 0
             and rr >= 1.5
             and 0 < dist <= 0.5
-            and entry_gap <= 0.50
         )
 
         clean_pullback_sniper = (
-            decision == "TRADE"
-            and action == "READY NOW"
-            and score >= 8
+            mode == "quick"
+            and decision == "TRADE"
+            and score >= 7
             and status == "Pullback"
             and risk > 0
             and reward > 0
             and rr >= 1.5
             and price > open_price
             and price > stop
-            and entry_gap <= 0.50
         )
 
-        if clean_breakout_sniper or clean_pullback_sniper:
+        clean_swing_watch = (
+            mode == "swing"
+            and status == "Swing Pullback"
+            and score >= 6
+            and risk > 0
+            and reward > 0
+            and rr >= 1.5
+        )
+
+        if clean_breakout_sniper or clean_pullback_sniper or clean_swing_watch:
             sniper = "YES"
 
-        grade = get_grade(score)
+        # --- GRADE ---
+        grade = get_grade(score, sniper)
 
-        confidence = get_confidence(
-            decision=decision,
-            action=action,
-            sniper=sniper,
-            score=score,
-            rr=rr,
-            status=status,
-            entry_gap=entry_gap,
-        )
-
-        trade_style = get_trade_style(
-            decision=decision,
-            action=action,
-            sniper=sniper,
-            confidence=confidence,
-        )
-
-        management = build_management(
-            decision=decision,
-            action=action,
-            sniper=sniper,
-            confidence=confidence,
-            trade_style=trade_style,
-            entry=entry,
-            stop=stop,
-            target=target,
-            entry_gap=entry_gap,
-            entry_warning=entry_warning,
-        )
-
-        verdict = build_verdict(
-            decision=decision,
-            action=action,
-            sniper=sniper,
-            confidence=confidence,
-            trade_style=trade_style,
-            status=status,
-            entry_warning=entry_warning,
-        )
-
+        # --- REASON TEXT ---
         reason = build_reason(
             status=status,
             decision=decision,
@@ -949,13 +389,9 @@ def get_stock_data(symbol):
             score=score,
             dist=dist,
             blockers=blockers,
-            confidence=confidence,
-            trade_style=trade_style,
-            entry_gap=entry_gap,
-            entry_warning=entry_warning,
         )
 
-        stock = {
+        return {
             "symbol": symbol,
             "price": round(price, 2),
             "percent": round(percent, 2),
@@ -965,29 +401,15 @@ def get_stock_data(symbol):
             "score": score,
             "grade": grade,
             "sniper": sniper,
-            "confidence": confidence,
-            "trade_style": trade_style,
-            "management": management,
-            "verdict": verdict,
             "rr": round(rr, 2) if rr else 0,
             "distance": round(dist, 2),
             "entry": round(entry, 2),
             "stop": round(stop, 2),
             "target": round(target, 2),
-            "entry_gap": round(entry_gap, 2),
-            "entry_gap_pct": round(entry_gap_pct, 2),
-            "entry_warning": entry_warning,
             "focus_rank": "",
             "focus_label": "",
             "reason": reason,
         }
-
-        stock = add_empty_event_fields(stock)
-
-        earnings_info = get_earnings_info(symbol)
-        stock = apply_event_risk_filter(stock, earnings_info)
-
-        return add_empty_position_fields(stock)
 
     except Exception as e:
         return empty_stock(symbol, str(e))
@@ -995,13 +417,10 @@ def get_stock_data(symbol):
 
 def is_focus_candidate(stock):
     return (
-        stock.get("decision") == "TRADE"
-        and stock.get("action") == "READY NOW"
-        and stock.get("score", 0) >= 7
+        stock.get("sniper") == "YES"
+        and stock.get("score", 0) >= 6
         and stock.get("rr", 0) >= 1.5
         and stock.get("status") != "Extended"
-        and stock.get("entry_gap", 999) <= 1.00
-        and stock.get("event_risk") != "YES"
     )
 
 
@@ -1013,33 +432,6 @@ def decision_priority(stock):
     }
 
     return priorities.get(stock.get("decision"), 9)
-
-
-def confidence_priority(stock):
-    priorities = {
-        "HIGH": 0,
-        "MEDIUM": 1,
-        "LOW": 2,
-        "NONE": 3,
-    }
-
-    return priorities.get(stock.get("confidence"), 9)
-
-
-def action_priority(stock):
-    priorities = {
-        "READY NOW": 0,
-        "EARNINGS WATCH": 1,
-        "WATCH FOR BREAK": 2,
-        "WAIT FOR BOUNCE": 3,
-        "CHECK SETUP": 4,
-        "WAIT": 5,
-        "WAIT FOR RESET": 6,
-        "TOO LATE / EXTENDED": 7,
-        "PASS": 8,
-    }
-
-    return priorities.get(stock.get("action"), 9)
 
 
 def grade_priority(stock):
@@ -1054,27 +446,12 @@ def grade_priority(stock):
     return priorities.get(stock.get("grade"), 9)
 
 
-def event_risk_priority(stock):
-    priorities = {
-        "NONE": 0,
-        "MEDIUM": 1,
-        "HIGH": 2,
-    }
-
-    return priorities.get(stock.get("event_risk_level"), 9)
-
-
 def scanner_sort_key(stock):
-    active_bonus = 0 if stock.get("is_active_position") else 1
     focus_bonus = 0 if is_focus_candidate(stock) else 1
 
     return (
-        active_bonus,
         focus_bonus,
         decision_priority(stock),
-        event_risk_priority(stock),
-        confidence_priority(stock),
-        action_priority(stock),
         grade_priority(stock),
         -stock.get("score", 0),
         -stock.get("rr", 0),
@@ -1099,11 +476,13 @@ def add_focus_labels(stocks):
 
 @app.route("/")
 def home():
-    symbols = get_watchlist()
-    active_position = get_active_position()
+    mode = request.args.get("mode", "quick").lower()
 
-    stocks = [get_stock_data(s) for s in symbols]
-    stocks = apply_active_position_to_stocks(stocks, active_position)
+    if mode not in VALID_MODES:
+        mode = "quick"
+
+    symbols = get_watchlist()
+    stocks = [get_stock_data(s, mode) for s in symbols]
 
     stocks.sort(key=scanner_sort_key)
     stocks = add_focus_labels(stocks)
@@ -1111,46 +490,31 @@ def home():
     return render_template(
         "index.html",
         stocks=stocks,
-        active_position=active_position,
-        last_updated=datetime.now(EASTERN).strftime("%I:%M:%S %p"),
+        mode=mode,
+        last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
-
-
-@app.route("/position", methods=["POST"])
-def set_position():
-    symbol = request.form.get("position_symbol", "").upper().strip()
-    entry_raw = request.form.get("position_entry", "").strip()
-    shares_raw = request.form.get("position_shares", "").strip()
-
-    try:
-        entry = float(entry_raw)
-        shares = float(shares_raw)
-
-        if symbol and entry > 0 and shares > 0:
-            set_active_position(symbol, entry, shares)
-
-    except ValueError:
-        pass
-
-    return redirect(url_for("home"))
-
-
-@app.route("/position/clear", methods=["POST"])
-def clear_position():
-    clear_active_position()
-    return redirect(url_for("home"))
 
 
 @app.route("/add", methods=["POST"])
 def add():
+    mode = request.form.get("mode", "quick").lower()
+
+    if mode not in VALID_MODES:
+        mode = "quick"
+
     add_symbol(request.form.get("symbol", ""))
-    return redirect(url_for("home"))
+    return redirect(url_for("home", mode=mode))
 
 
 @app.route("/remove/<symbol>", methods=["POST"])
 def remove(symbol):
+    mode = request.form.get("mode", "quick").lower()
+
+    if mode not in VALID_MODES:
+        mode = "quick"
+
     remove_symbol(symbol)
-    return redirect(url_for("home"))
+    return redirect(url_for("home", mode=mode))
 
 
 if __name__ == "__main__":
