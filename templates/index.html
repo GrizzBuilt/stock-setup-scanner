@@ -2,10 +2,8 @@
 File: templates/index.html
 Purpose: Stock Setup Scanner dashboard UI
 Main changes:
-- Added Quick / Swing mode toggle
-- Preserves selected mode after add/remove actions
 - Keeps current table-based layout
-- Keeps collapsible detail rows
+- Adds collapsible detail rows
 - Forces all detail rows collapsed on page load
 - Shows quick overview first
 - Expands to show Entry, Stop, Target, Reason, and Remove button
@@ -24,34 +22,14 @@ Main changes:
     <main class="page">
         <header class="page-header">
             <h1>Stock Setup Scanner</h1>
-
-            {% if mode == "swing" %}
-                <p class="subtitle">Swing trading setup scanner — watching for pullbacks in strong trends.</p>
-            {% else %}
-                <p class="subtitle">Quick trade setup scanner — built to catch clean breakouts without chasing.</p>
-            {% endif %}
+            <p class="subtitle">Strict swing trading setup scanner — built to avoid chasing.</p>
 
             <div class="summary-row">
                 <p class="timestamp">Last updated: <strong>{{ last_updated }}</strong></p>
-
-                <form method="GET" action="/" class="mode-form">
-                    <label for="mode">Scanner Mode</label>
-
-                    <select name="mode" id="mode" onchange="this.form.submit()">
-                        <option value="quick" {% if mode == "quick" %}selected{% endif %}>
-                            Quick Trades ⚡
-                        </option>
-
-                        <option value="swing" {% if mode == "swing" %}selected{% endif %}>
-                            Swing Trades 🌊
-                        </option>
-                    </select>
-                </form>
             </div>
         </header>
 
         <form method="POST" action="/add" class="add-form">
-            <input type="hidden" name="mode" value="{{ mode }}">
             <input type="text" name="symbol" placeholder="Add ticker, ex: AAPL" required>
             <button type="submit">Add</button>
         </form>
@@ -108,10 +86,6 @@ Main changes:
                         >
                             <td data-label="Symbol" class="symbol-cell">
                                 <strong>{{ stock.symbol }}</strong>
-
-                                {% if stock.focus_label %}
-                                    <span class="focus-label">{{ stock.focus_label }}</span>
-                                {% endif %}
                             </td>
 
                             <td data-label="Decision">
@@ -210,7 +184,6 @@ Main changes:
                                     </p>
 
                                     <form method="POST" action="/remove/{{ stock.symbol }}">
-                                        <input type="hidden" name="mode" value="{{ mode }}">
                                         <button type="submit" class="remove-btn">Remove {{ stock.symbol }}</button>
                                     </form>
                                 </div>
@@ -324,8 +297,7 @@ Main changes:
         sniperOnly.addEventListener("change", applyFilters);
 
         setInterval(function () {
-            const currentUrl = new URL(window.location.href);
-            window.location.href = currentUrl.toString();
+            window.location.reload();
         }, 30000);
     </script>
 </body>

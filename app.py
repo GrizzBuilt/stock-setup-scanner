@@ -1,11 +1,18 @@
-# File: app.py
+ File: app.py
 # Purpose: Main Flask app + upgraded trading logic engine
 # Changes:
-# - Added Quick / Swing scanner mode using ?mode=quick or ?mode=swing
-# - Quick mode keeps the current breakout/sniper logic
-# - Swing mode scans for pullbacks in confirmed uptrends
-# - Added swing-specific statuses and reason text
-# - Keeps existing scoring, sorting, focus labels, and UI data structure
+# - Added Sniper Mode
+# - Added Action field
+# - Added Risk/Reward calculation
+# - Added Score + Grade system
+# - Improved breakout + pullback classification
+# - Added reasoning text for decisions
+# - Added Focus Rank so the best 1–2 actionable setups rise to the top
+# - Fixed decision override so WATCH setups are not automatically forced to PASS
+# - Updated pullback wording:
+#   - "WAIT FOR PULLBACK" is now "WAIT FOR BOUNCE"
+#   - Reason text now says "Waiting for bounce confirmation"
+# - Allowed clean pullback setups to become Sniper YES when confirmed by logic
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -17,9 +24,6 @@ import yfinance as yf
 from db import init_db, get_watchlist, add_symbol, remove_symbol
 
 app = Flask(__name__)
-
-
-VALID_MODES = ["quick", "swing"]
 
 
 def empty_stock(symbol, message="No data"):
@@ -78,24 +82,13 @@ def build_reason(status, decision, action, rr, score, dist, blockers):
             return f"Pullback bounce confirmed. RR {round(rr, 2)}. Score {score}/10. Clean trade candidate."
         return f"Pullback setup forming. Waiting for bounce confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
 
-    if status == "Swing Pullback":
-        return f"Swing pullback in an uptrend. Waiting for breakout confirmation. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
-
-    if status == "Trend Strength":
-        return f"Stock is in an uptrend, but not pulled back enough for a clean swing entry yet. RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
-
-    if status == "No Trend":
-        return f"No confirmed swing uptrend yet.{blocker_text}"
-
     return f"No clean setup.{blocker_text}"
 
 
-def get_stock_data(symbol, mode="quick"):
+def get_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
-
-        # Pull enough data for both quick and swing mode.
-        data = ticker.history(period="3mo")
+        data = ticker.history(period="5d")
 
         if data.empty or len(data) < 2:
             return empty_stock(symbol, "Not enough data")
@@ -114,9 +107,10 @@ def get_stock_data(symbol, mode="quick"):
         percent = ((price - open_price) / open_price) * 100 if open_price else 0
         range_size = high - low
 
+        # --- DISTANCE FROM PREVIOUS HIGH ---
         # Positive = price is above yesterday's high.
         # Negative = price is still below yesterday's high.
-        dist = ((price - prev_high) / prev_high) * 100 if prev_high else 0
+        dist = ((price - prev_high) / prev_high) * 100
 
         status = "No Trade"
         decision = "PASS"
@@ -126,79 +120,29 @@ def get_stock_data(symbol, mode="quick"):
         stop = prev_low
         target = prev_high + range_size
 
-        # ============================================================
-        # QUICK MODE
-        # Fast breakout / pullback scanner for short trades.
-        # ============================================================
+        # --- SETUP CLASSIFICATION ---
+        if -0.5 <= dist <= 0:
+            status = "Breakout Watch"
+            decision = "WATCH"
+            action = "WATCH FOR BREAK"
 
-        if mode == "quick":
-            if -0.5 <= dist <= 0:
-                status = "Breakout Watch"
-                decision = "WATCH"
-                action = "WATCH FOR BREAK"
+        elif 0 < dist <= 1:
+            status = "Breakout Triggered"
+            decision = "TRADE"
+            action = "READY NOW"
 
-            elif 0 < dist <= 1:
-                status = "Breakout Triggered"
-                decision = "TRADE"
-                action = "READY NOW"
+        elif dist > 1:
+            status = "Extended"
+            decision = "PASS"
+            action = "TOO LATE / EXTENDED"
 
-            elif dist > 1:
-                status = "Extended"
-                decision = "PASS"
-                action = "TOO LATE / EXTENDED"
-
-            elif percent > 0 and price > open_price and range_size >= 2:
-                status = "Pullback"
-                decision = "WATCH"
-                action = "WAIT FOR BOUNCE"
-                entry = price
-                stop = low
-                target = price + 3
-
-        # ============================================================
-        # SWING MODE
-        # Slower scanner for multi-day setups.
-        # Looks for pullbacks inside confirmed uptrends.
-        # ============================================================
-
-        elif mode == "swing":
-            if len(data) < 50:
-                return empty_stock(symbol, "Not enough trend data for swing mode")
-
-            sma20 = data["Close"].tail(20).mean()
-            sma50 = data["Close"].tail(50).mean()
-
-            recent_20 = data.tail(20)
-            recent_high = float(recent_20["High"].max())
-            recent_low = float(recent_20["Low"].min())
-
-            trend_up = price > sma20 and sma20 > sma50
-            pullback = price < recent_high * 0.97 and price > sma20
-            extended = (price - sma20) / sma20 > 0.08 if sma20 else False
-
-            entry = recent_high
-            stop = recent_low
-            target = entry + ((entry - stop) * 2)
-
-            if trend_up and pullback and not extended:
-                status = "Swing Pullback"
-                decision = "WATCH"
-                action = "WAIT FOR BREAK"
-
-            elif trend_up and not pullback and not extended:
-                status = "Trend Strength"
-                decision = "WATCH"
-                action = "WAIT FOR PULLBACK"
-
-            elif extended:
-                status = "Extended"
-                decision = "PASS"
-                action = "TOO LATE / EXTENDED"
-
-            else:
-                status = "No Trend"
-                decision = "PASS"
-                action = "PASS"
+        elif percent > 0 and price > open_price and range_size >= 2:
+            status = "Pullback"
+            decision = "WATCH"
+            action = "WAIT FOR BOUNCE"
+            entry = price
+            stop = low
+            target = price + 3
 
         # --- RISK / REWARD ---
         risk = entry - stop
@@ -208,41 +152,21 @@ def get_stock_data(symbol, mode="quick"):
         # --- SCORE ---
         score = 0
 
-        if status in [
-            "Breakout Watch",
-            "Breakout Triggered",
-            "Pullback",
-            "Swing Pullback",
-            "Trend Strength",
-        ]:
+        if status in ["Breakout Watch", "Breakout Triggered", "Pullback"]:
             score += 2
 
-        if mode == "quick":
-            if abs(dist) <= 0.25:
-                score += 2
-            elif abs(dist) <= 0.5:
-                score += 1
+        if abs(dist) <= 0.25:
+            score += 2
+        elif abs(dist) <= 0.5:
+            score += 1
 
-            if range_size >= 3:
-                score += 2
-            elif range_size >= 2:
-                score += 1
+        if range_size >= 3:
+            score += 2
+        elif range_size >= 2:
+            score += 1
 
-            if 0.5 <= percent <= 3:
-                score += 1
-
-        elif mode == "swing":
-            if status == "Swing Pullback":
-                score += 3
-
-            if status == "Trend Strength":
-                score += 1
-
-            if -3 <= percent <= 2:
-                score += 1
-
-            if price > stop:
-                score += 1
+        if 0.5 <= percent <= 3:
+            score += 1
 
         if rr >= 1.5:
             score += 1
@@ -263,9 +187,6 @@ def get_stock_data(symbol, mode="quick"):
         if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
             score -= 2
 
-        if mode == "swing" and status == "Swing Pullback" and rr < 1.5:
-            score -= 2
-
         if risk <= 0:
             score -= 2
 
@@ -283,68 +204,49 @@ def get_stock_data(symbol, mode="quick"):
         if reward <= 0:
             blockers.append("no upside target")
 
-        if status in ["Breakout Triggered", "Pullback", "Swing Pullback"] and rr < 1.5:
+        if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
             blockers.append("risk/reward below 1.5")
 
-        if mode == "quick" and status in ["Breakout Triggered", "Pullback"] and score < 7:
+        if status in ["Breakout Triggered", "Pullback"] and score < 7:
             blockers.append("score below trade quality")
 
-        if mode == "swing" and status == "Swing Pullback" and score < 6:
-            blockers.append("swing setup not strong enough yet")
-
         # --- FINAL TRADE DECISION ---
-        if mode == "quick":
-            if status == "Breakout Triggered":
-                if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
-                    decision = "TRADE"
-                    action = "READY NOW"
-                else:
-                    decision = "PASS"
-                    action = "PASS"
-
-            elif status == "Pullback":
-                if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
-                    decision = "TRADE"
-                    action = "READY NOW"
-                else:
-                    decision = "WATCH"
-                    action = "WAIT FOR BOUNCE"
-
-            elif status == "Breakout Watch":
-                decision = "WATCH"
-                action = "WATCH FOR BREAK"
-
-            elif status == "Extended":
-                decision = "PASS"
-                action = "TOO LATE / EXTENDED"
-
+        # Breakouts can become READY NOW if they pass strict filters.
+        if status == "Breakout Triggered":
+            if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
+                decision = "TRADE"
+                action = "READY NOW"
             else:
                 decision = "PASS"
                 action = "PASS"
 
-        elif mode == "swing":
-            if status == "Swing Pullback":
-                decision = "WATCH"
-                action = "WAIT FOR BREAK"
-
-            elif status == "Trend Strength":
-                decision = "WATCH"
-                action = "WAIT FOR PULLBACK"
-
-            elif status == "Extended":
-                decision = "PASS"
-                action = "TOO LATE / EXTENDED"
-
+        # Pullbacks should not say "WAIT FOR PULLBACK" because the pullback is already happening.
+        # We are waiting for the bounce/reclaim confirmation.
+        elif status == "Pullback":
+            if risk > 0 and reward > 0 and rr >= 1.5 and score >= 7:
+                decision = "TRADE"
+                action = "READY NOW"
             else:
-                decision = "PASS"
-                action = "PASS"
+                decision = "WATCH"
+                action = "WAIT FOR BOUNCE"
+
+        elif status == "Breakout Watch":
+            decision = "WATCH"
+            action = "WATCH FOR BREAK"
+
+        elif status == "Extended":
+            decision = "PASS"
+            action = "TOO LATE / EXTENDED"
+
+        else:
+            decision = "PASS"
+            action = "PASS"
 
         # --- SNIPER MODE ---
         sniper = "NO"
 
         clean_breakout_sniper = (
-            mode == "quick"
-            and decision == "TRADE"
+            decision == "TRADE"
             and score >= 7
             and status == "Breakout Triggered"
             and risk > 0
@@ -354,8 +256,7 @@ def get_stock_data(symbol, mode="quick"):
         )
 
         clean_pullback_sniper = (
-            mode == "quick"
-            and decision == "TRADE"
+            decision == "TRADE"
             and score >= 7
             and status == "Pullback"
             and risk > 0
@@ -365,16 +266,7 @@ def get_stock_data(symbol, mode="quick"):
             and price > stop
         )
 
-        clean_swing_watch = (
-            mode == "swing"
-            and status == "Swing Pullback"
-            and score >= 6
-            and risk > 0
-            and reward > 0
-            and rr >= 1.5
-        )
-
-        if clean_breakout_sniper or clean_pullback_sniper or clean_swing_watch:
+        if clean_breakout_sniper or clean_pullback_sniper:
             sniper = "YES"
 
         # --- GRADE ---
@@ -417,8 +309,9 @@ def get_stock_data(symbol, mode="quick"):
 
 def is_focus_candidate(stock):
     return (
-        stock.get("sniper") == "YES"
-        and stock.get("score", 0) >= 6
+        stock.get("decision") == "TRADE"
+        and stock.get("sniper") == "YES"
+        and stock.get("score", 0) >= 7
         and stock.get("rr", 0) >= 1.5
         and stock.get("status") != "Extended"
     )
@@ -476,13 +369,8 @@ def add_focus_labels(stocks):
 
 @app.route("/")
 def home():
-    mode = request.args.get("mode", "quick").lower()
-
-    if mode not in VALID_MODES:
-        mode = "quick"
-
     symbols = get_watchlist()
-    stocks = [get_stock_data(s, mode) for s in symbols]
+    stocks = [get_stock_data(s) for s in symbols]
 
     stocks.sort(key=scanner_sort_key)
     stocks = add_focus_labels(stocks)
@@ -490,31 +378,20 @@ def home():
     return render_template(
         "index.html",
         stocks=stocks,
-        mode=mode,
         last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
 
 
 @app.route("/add", methods=["POST"])
 def add():
-    mode = request.form.get("mode", "quick").lower()
-
-    if mode not in VALID_MODES:
-        mode = "quick"
-
     add_symbol(request.form.get("symbol", ""))
-    return redirect(url_for("home", mode=mode))
+    return redirect(url_for("home"))
 
 
 @app.route("/remove/<symbol>", methods=["POST"])
 def remove(symbol):
-    mode = request.form.get("mode", "quick").lower()
-
-    if mode not in VALID_MODES:
-        mode = "quick"
-
     remove_symbol(symbol)
-    return redirect(url_for("home", mode=mode))
+    return redirect(url_for("home"))
 
 
 if __name__ == "__main__":
