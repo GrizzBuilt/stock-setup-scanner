@@ -1,6 +1,12 @@
 # File: app.py
 # Purpose: Flask stock scanner with setup scoring, Sniper Mode,
-# entry-gap chase protection, and SQLite Active Position Mode.
+# entry-gap chase protection, SQLite Active Position Mode,
+# and optional Quick / Swing scanner modes.
+#
+# Notes:
+# - Quick mode preserves the existing scanner logic.
+# - Swing mode adds slower trend/pullback thinking without removing
+#   active position management or current quick-trade behavior.
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -20,6 +26,17 @@ from db import (
 )
 
 app = Flask(__name__)
+
+VALID_MODES = ["quick", "swing"]
+
+
+def normalize_mode(mode):
+    mode = (mode or "quick").lower().strip()
+
+    if mode not in VALID_MODES:
+        return "quick"
+
+    return mode
 
 
 def add_empty_position_fields(stock):
@@ -107,7 +124,13 @@ def get_confidence(decision, action, sniper, score, rr, status, entry_gap):
     ):
         return "MEDIUM"
 
-    if decision == "WATCH" and status in ["Breakout Watch", "Pullback"]:
+    if decision == "WATCH" and status in [
+        "Breakout Watch",
+        "Pullback",
+        "Swing Pullback",
+        "Swing Base",
+        "Swing Trend",
+    ]:
         return "LOW"
 
     return "NONE"
@@ -119,6 +142,9 @@ def get_trade_style(decision, action, sniper, confidence):
 
     if decision == "TRADE" and action == "READY NOW" and confidence == "MEDIUM":
         return "QUICK TRADE"
+
+    if action in ["SWING WATCH", "WAIT FOR SWING BREAK"]:
+        return "SWING WATCH"
 
     if decision == "WATCH":
         return "WATCH ONLY"
@@ -142,6 +168,18 @@ def build_management(
         return (
             "Price is too far above the scanner entry. Do not chase. "
             "Wait for price to reset closer to entry or form a fresh setup."
+        )
+
+    if action == "WAIT FOR SWING BREAK":
+        return (
+            "Swing watch only. Do not enter just because it looks good. "
+            "Wait for price to break above the swing trigger and hold strength."
+        )
+
+    if action == "SWING WATCH":
+        return (
+            "Swing setup forming. This is not a quick trade signal. "
+            "Watch for trend continuation, a clean reclaim, or a break above resistance."
         )
 
     if decision == "TRADE" and action == "READY NOW" and trade_style == "SNIPER":
@@ -181,6 +219,12 @@ def build_management(
 def build_verdict(decision, action, sniper, confidence, trade_style, status, entry_warning):
     if action == "WAIT FOR RESET":
         return "DO NOT CHASE — WAIT FOR RESET"
+
+    if action == "WAIT FOR SWING BREAK":
+        return "SWING WATCH — WAIT FOR BREAK"
+
+    if action == "SWING WATCH":
+        return "SWING SETUP FORMING — WATCH"
 
     if decision == "TRADE" and action == "READY NOW" and sniper == "YES":
         return "A+ SETUP — TRAIL WITH CONFIDENCE"
@@ -227,6 +271,37 @@ def build_reason(
         return (
             f"{prefix} Price is ${round(entry_gap, 2)} above scanner entry. "
             f"Wait for a reset instead of chasing.{blocker_text}"
+        )
+
+    if status == "Swing Pullback":
+        return (
+            f"{prefix} Swing pullback inside an uptrend. "
+            f"Watch for a break above the swing trigger. "
+            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        )
+
+    if status == "Swing Base":
+        return (
+            f"{prefix} Swing base forming. Price is holding trend support but has not broken yet. "
+            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        )
+
+    if status == "Swing Trend":
+        return (
+            f"{prefix} Uptrend is intact, but price has not pulled back enough for a cleaner swing entry. "
+            f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
+        )
+
+    if status == "Swing Extended":
+        return (
+            f"{prefix} Trend is strong, but price is stretched above the 20-day average. "
+            f"Do not chase a swing entry here.{blocker_text}"
+        )
+
+    if status == "No Swing Setup":
+        return (
+            f"{prefix} No clean swing structure yet. "
+            f"Wait for trend, pullback, base, or breakout confirmation.{blocker_text}"
         )
 
     if status == "Extended":
@@ -426,7 +501,7 @@ def apply_active_position_to_stocks(stocks, active_position):
     return stocks
 
 
-def get_stock_data(symbol):
+def get_quick_stock_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
         data = ticker.history(period="5d")
@@ -723,6 +798,299 @@ def get_stock_data(symbol):
         return empty_stock(symbol, str(e))
 
 
+def get_swing_stock_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period="3mo")
+
+        if data.empty or len(data) < 50:
+            return empty_stock(symbol, "Not enough data for swing mode")
+
+        row = data.iloc[-1]
+        prev = data.iloc[-2]
+
+        price = float(row["Close"])
+        open_price = float(row["Open"])
+        high = float(row["High"])
+        low = float(row["Low"])
+
+        prev_high = float(prev["High"])
+        prev_low = float(prev["Low"])
+
+        percent = ((price - open_price) / open_price) * 100 if open_price else 0
+        dist = ((price - prev_high) / prev_high) * 100 if prev_high else 0
+
+        close_series = data["Close"]
+        high_series = data["High"]
+        low_series = data["Low"]
+        volume_series = data["Volume"]
+
+        sma20 = float(close_series.tail(20).mean())
+        sma50 = float(close_series.tail(50).mean())
+
+        recent_20 = data.tail(20)
+        recent_10 = data.tail(10)
+
+        recent_high_20 = float(recent_20["High"].max())
+        recent_low_20 = float(recent_20["Low"].min())
+        recent_high_10 = float(recent_10["High"].max())
+        recent_low_10 = float(recent_10["Low"].min())
+
+        avg_volume_20 = float(volume_series.tail(20).mean())
+        current_volume = float(row["Volume"])
+        volume_ratio = current_volume / avg_volume_20 if avg_volume_20 else 0
+
+        trend_up = price > sma20 and sma20 > sma50
+        above_sma50 = price > sma50
+        holding_sma20 = price >= sma20 * 0.985
+        near_sma20 = abs(price - sma20) / sma20 <= 0.03 if sma20 else False
+
+        pullback_from_high_pct = (
+            ((recent_high_20 - price) / recent_high_20) * 100
+            if recent_high_20
+            else 0
+        )
+
+        extended_from_sma20_pct = (
+            ((price - sma20) / sma20) * 100
+            if sma20
+            else 0
+        )
+
+        range_10 = recent_high_10 - recent_low_10
+        avg_range_20 = float((high_series.tail(20) - low_series.tail(20)).mean())
+        tightening = range_10 <= avg_range_20 * 4 if avg_range_20 else False
+
+        status = "No Swing Setup"
+        decision = "WATCH"
+        action = "WAIT"
+
+        entry = recent_high_10
+        stop = min(recent_low_10, sma20)
+        target = entry + ((entry - stop) * 2)
+
+        blockers = []
+
+        if not trend_up:
+            blockers.append("trend not confirmed")
+
+        if not above_sma50:
+            blockers.append("below 50-day average")
+
+        if extended_from_sma20_pct > 8:
+            blockers.append("too extended above 20-day average")
+
+        if volume_ratio < 0.70:
+            blockers.append("volume is light")
+
+        if trend_up and extended_from_sma20_pct > 8:
+            status = "Swing Extended"
+            decision = "PASS"
+            action = "TOO LATE / EXTENDED"
+
+        elif trend_up and 3 <= pullback_from_high_pct <= 10 and holding_sma20:
+            status = "Swing Pullback"
+            decision = "WATCH"
+            action = "WAIT FOR SWING BREAK"
+
+        elif trend_up and near_sma20 and tightening:
+            status = "Swing Base"
+            decision = "WATCH"
+            action = "SWING WATCH"
+
+        elif trend_up:
+            status = "Swing Trend"
+            decision = "WATCH"
+            action = "SWING WATCH"
+
+        else:
+            status = "No Swing Setup"
+            decision = "WATCH"
+            action = "WAIT"
+
+        risk = entry - stop
+        reward = target - entry
+        rr = reward / risk if risk > 0 else 0
+
+        entry_gap = price - entry
+        entry_gap_pct = (entry_gap / entry) * 100 if entry else 0
+        entry_warning = "SWING WAIT ZONE"
+
+        score = 0
+
+        if trend_up:
+            score += 3
+
+        if price > sma20:
+            score += 1
+
+        if sma20 > sma50:
+            score += 1
+
+        if status == "Swing Pullback":
+            score += 2
+
+        if status == "Swing Base":
+            score += 2
+
+        if holding_sma20:
+            score += 1
+
+        if tightening:
+            score += 1
+
+        if volume_ratio >= 1:
+            score += 1
+
+        if rr >= 1.5:
+            score += 1
+
+        if rr >= 2:
+            score += 1
+
+        if risk > 0:
+            score += 1
+
+        if reward > 0:
+            score += 1
+
+        if status == "Swing Extended":
+            score -= 3
+
+        if not trend_up:
+            score -= 2
+
+        if rr < 1.5:
+            score -= 1
+
+        if risk <= 0:
+            score -= 2
+
+        score = max(0, min(score, 10))
+
+        if risk <= 0:
+            blockers.append("invalid risk")
+
+        if reward <= 0:
+            blockers.append("no upside target")
+
+        if rr < 1.5:
+            blockers.append("risk/reward below 1.5")
+
+        if status in ["Swing Pullback", "Swing Base"] and score < 6:
+            blockers.append("swing score not strong enough yet")
+
+        sniper = "NO"
+
+        if (
+            status in ["Swing Pullback", "Swing Base"]
+            and score >= 7
+            and rr >= 1.5
+            and risk > 0
+            and reward > 0
+            and trend_up
+            and extended_from_sma20_pct <= 8
+        ):
+            sniper = "YES"
+
+        grade = get_grade(score)
+
+        confidence = get_confidence(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            score=score,
+            rr=rr,
+            status=status,
+            entry_gap=entry_gap,
+        )
+
+        trade_style = get_trade_style(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            confidence=confidence,
+        )
+
+        management = build_management(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            confidence=confidence,
+            trade_style=trade_style,
+            entry=entry,
+            stop=stop,
+            target=target,
+            entry_gap=entry_gap,
+            entry_warning=entry_warning,
+        )
+
+        verdict = build_verdict(
+            decision=decision,
+            action=action,
+            sniper=sniper,
+            confidence=confidence,
+            trade_style=trade_style,
+            status=status,
+            entry_warning=entry_warning,
+        )
+
+        reason = build_reason(
+            status=status,
+            decision=decision,
+            action=action,
+            rr=rr,
+            score=score,
+            dist=dist,
+            blockers=blockers,
+            confidence=confidence,
+            trade_style=trade_style,
+            entry_gap=entry_gap,
+            entry_warning=entry_warning,
+        )
+
+        stock = {
+            "symbol": symbol,
+            "price": round(price, 2),
+            "percent": round(percent, 2),
+            "status": status,
+            "decision": decision,
+            "action": action,
+            "score": score,
+            "grade": grade,
+            "sniper": sniper,
+            "confidence": confidence,
+            "trade_style": trade_style,
+            "management": management,
+            "verdict": verdict,
+            "rr": round(rr, 2) if rr else 0,
+            "distance": round(dist, 2),
+            "entry": round(entry, 2),
+            "stop": round(stop, 2),
+            "target": round(target, 2),
+            "entry_gap": round(entry_gap, 2),
+            "entry_gap_pct": round(entry_gap_pct, 2),
+            "entry_warning": entry_warning,
+            "focus_rank": "",
+            "focus_label": "",
+            "reason": reason,
+        }
+
+        return add_empty_position_fields(stock)
+
+    except Exception as e:
+        return empty_stock(symbol, str(e))
+
+
+def get_stock_data(symbol, mode="quick"):
+    mode = normalize_mode(mode)
+
+    if mode == "swing":
+        return get_swing_stock_data(symbol)
+
+    return get_quick_stock_data(symbol)
+
+
 def is_focus_candidate(stock):
     return (
         stock.get("decision") == "TRADE"
@@ -760,11 +1128,13 @@ def action_priority(stock):
         "READY NOW": 0,
         "WATCH FOR BREAK": 1,
         "WAIT FOR BOUNCE": 2,
-        "CHECK SETUP": 3,
-        "WAIT": 4,
-        "WAIT FOR RESET": 5,
-        "TOO LATE / EXTENDED": 6,
-        "PASS": 7,
+        "WAIT FOR SWING BREAK": 3,
+        "SWING WATCH": 4,
+        "CHECK SETUP": 5,
+        "WAIT": 6,
+        "WAIT FOR RESET": 7,
+        "TOO LATE / EXTENDED": 8,
+        "PASS": 9,
     }
 
     return priorities.get(stock.get("action"), 9)
@@ -816,10 +1186,12 @@ def add_focus_labels(stocks):
 
 @app.route("/")
 def home():
+    mode = normalize_mode(request.args.get("mode", "quick"))
+
     symbols = get_watchlist()
     active_position = get_active_position()
 
-    stocks = [get_stock_data(s) for s in symbols]
+    stocks = [get_stock_data(s, mode) for s in symbols]
     stocks = apply_active_position_to_stocks(stocks, active_position)
 
     stocks.sort(key=scanner_sort_key)
@@ -829,12 +1201,15 @@ def home():
         "index.html",
         stocks=stocks,
         active_position=active_position,
+        mode=mode,
         last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
     )
 
 
 @app.route("/position", methods=["POST"])
 def set_position():
+    mode = normalize_mode(request.form.get("mode", "quick"))
+
     symbol = request.form.get("position_symbol", "").upper().strip()
     entry_raw = request.form.get("position_entry", "").strip()
     shares_raw = request.form.get("position_shares", "").strip()
@@ -849,25 +1224,28 @@ def set_position():
     except ValueError:
         pass
 
-    return redirect(url_for("home"))
+    return redirect(url_for("home", mode=mode))
 
 
 @app.route("/position/clear", methods=["POST"])
 def clear_position():
+    mode = normalize_mode(request.form.get("mode", "quick"))
     clear_active_position()
-    return redirect(url_for("home"))
+    return redirect(url_for("home", mode=mode))
 
 
 @app.route("/add", methods=["POST"])
 def add():
+    mode = normalize_mode(request.form.get("mode", "quick"))
     add_symbol(request.form.get("symbol", ""))
-    return redirect(url_for("home"))
+    return redirect(url_for("home", mode=mode))
 
 
 @app.route("/remove/<symbol>", methods=["POST"])
 def remove(symbol):
+    mode = normalize_mode(request.form.get("mode", "quick"))
     remove_symbol(symbol)
-    return redirect(url_for("home"))
+    return redirect(url_for("home", mode=mode))
 
 
 if __name__ == "__main__":

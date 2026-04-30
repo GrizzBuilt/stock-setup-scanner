@@ -3,6 +3,8 @@ File: templates/index.html
 Purpose: Stock Setup Scanner dashboard UI
 Main changes:
 - Keeps current table-based scanner layout
+- Adds Quick / Swing scanner mode toggle
+- Preserves mode during Add, Remove, Set Active Position, Clear Position
 - Adds Active Position panel
 - Shows actual ticker, entry, shares, P/L, protect level, and position verdict
 - Adds wrong-ticker warning when an active position exists
@@ -10,6 +12,7 @@ Main changes:
 - Keeps collapsible detail rows
 - Keeps active position row expanded after auto-refresh
 - Reopens the last manually expanded row when no active position exists
+- Auto-refresh preserves the current mode query string
 -->
 
 <!DOCTYPE html>
@@ -25,10 +28,23 @@ Main changes:
     <main class="page">
         <header class="page-header">
             <h1>Stock Setup Scanner</h1>
-            <p class="subtitle">Strict swing trading setup scanner — built to avoid chasing.</p>
+
+            {% if mode == "swing" %}
+                <p class="subtitle">Swing mode — slower trend and pullback scanner for multi-day setups.</p>
+            {% else %}
+                <p class="subtitle">Quick mode — strict setup scanner built to avoid chasing.</p>
+            {% endif %}
 
             <div class="summary-row">
                 <p class="timestamp">Last updated: <strong>{{ last_updated }}</strong></p>
+
+                <form method="GET" action="/" class="mode-form">
+                    <label for="mode">Mode</label>
+                    <select name="mode" id="mode" onchange="this.form.submit()">
+                        <option value="quick" {% if mode == "quick" %}selected{% endif %}>Quick Trades ⚡</option>
+                        <option value="swing" {% if mode == "swing" %}selected{% endif %}>Swing Trades 🌊</option>
+                    </select>
+                </form>
             </div>
         </header>
 
@@ -46,6 +62,7 @@ Main changes:
                     </p>
 
                     <form action="{{ url_for('clear_position') }}" method="POST" class="clear-position-form">
+                        <input type="hidden" name="mode" value="{{ mode }}">
                         <button type="submit" class="remove-btn">Clear Position</button>
                     </form>
                 </div>
@@ -54,6 +71,8 @@ Main changes:
             {% endif %}
 
             <form action="{{ url_for('set_position') }}" method="POST" class="active-position-form">
+                <input type="hidden" name="mode" value="{{ mode }}">
+
                 <input
                     type="text"
                     name="position_symbol"
@@ -82,6 +101,7 @@ Main changes:
         </section>
 
         <form method="POST" action="/add" class="add-form">
+            <input type="hidden" name="mode" value="{{ mode }}">
             <input type="text" name="symbol" placeholder="Add ticker, ex: AAPL" required>
             <button type="submit">Add</button>
         </form>
@@ -130,7 +150,7 @@ Main changes:
                                 decision-row-{{ stock.decision | lower }}
                                 action-{{ stock.action | lower | replace(' ', '-') | replace('/', '') }}
                                 {{ 'sniper-row' if stock.sniper == 'YES' else '' }}
-                                {{ 'extended-row' if stock.status == 'Extended' else '' }}
+                                {{ 'extended-row' if stock.status == 'Extended' or stock.status == 'Swing Extended' else '' }}
                                 {{ 'active-position-row' if stock.is_active_position else '' }}
                             "
                             data-symbol="{{ stock.symbol }}"
@@ -351,6 +371,7 @@ Main changes:
                                     </p>
 
                                     <form method="POST" action="/remove/{{ stock.symbol }}">
+                                        <input type="hidden" name="mode" value="{{ mode }}">
                                         <button type="submit" class="remove-btn">Remove {{ stock.symbol }}</button>
                                     </form>
                                 </div>
@@ -498,7 +519,8 @@ Main changes:
         sniperOnly.addEventListener("change", applyFilters);
 
         setInterval(function () {
-            window.location.reload();
+            const currentUrl = new URL(window.location.href);
+            window.location.href = currentUrl.toString();
         }, 30000);
     </script>
 </body>
