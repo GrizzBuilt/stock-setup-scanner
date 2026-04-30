@@ -28,7 +28,8 @@ app = Flask(__name__)
 VALID_MODES = ["quick", "swing"]
 SWING_REWARD_MULTIPLE = 1.75
 SWING_MAX_TARGET_PCT = 10
-SWING_MAX_ENTRY_ABOVE_PRICE_PCT = 5
+SWING_MAX_ENTRY_ABOVE_PRICE_PCT = 3
+SWING_MAX_PRICE_PAST_ENTRY_PCT = 2
 SWING_BREAKOUT_CLOSE_PCT = 3
 
 
@@ -427,8 +428,51 @@ def pct_above(value, base):
     return ((value - base) / base) * 100
 
 
+def get_swing_confidence(
+    decision,
+    action,
+    score,
+    rr,
+    trend_up,
+    entry_above_price_pct,
+    price_past_entry_pct,
+    target_above_entry_pct,
+    earnings_blocker,
+):
+    if (
+        decision == "TRADE"
+        and action == "READY NOW"
+        and score >= 8
+        and rr >= 1.5
+        and trend_up
+        and entry_above_price_pct <= SWING_MAX_ENTRY_ABOVE_PRICE_PCT
+        and price_past_entry_pct <= SWING_MAX_PRICE_PAST_ENTRY_PCT
+        and target_above_entry_pct <= SWING_MAX_TARGET_PCT
+        and not earnings_blocker
+    ):
+        return "HIGH"
+
+    if (
+        action == "WAIT FOR SWING BREAK"
+        and score >= 7
+        and rr >= 1.5
+        and trend_up
+        and entry_above_price_pct <= SWING_BREAKOUT_CLOSE_PCT
+        and target_above_entry_pct <= SWING_MAX_TARGET_PCT
+        and not earnings_blocker
+    ):
+        return "MEDIUM"
+
+    if action in ["WAIT FOR SWING BREAK", "SWING WATCH"] or decision == "WATCH":
+        return "LOW"
+
+    return "NONE"
+
+
 def build_swing_reason(
     status,
+    decision,
+    action,
     rr,
     score,
     dist,
@@ -456,6 +500,13 @@ def build_swing_reason(
 
     if level_note:
         level_text = f" {level_note}{level_text}"
+
+    if decision == "TRADE" and action == "READY NOW":
+        return (
+            f"{prefix} Swing setup is actionable now. Current price is "
+            f"{round(price, 2)}. RR {round(rr, 2)}. Score {score}/10."
+            f"{level_text}{blocker_text}"
+        )
 
     if status == "Swing Pullback":
         return (
@@ -1157,6 +1208,7 @@ def get_swing_stock_data(symbol):
         entry_gap = price - entry
         entry_gap_pct = (entry_gap / entry) * 100 if entry else 0
         entry_above_price_pct = pct_above(entry, price)
+        price_past_entry_pct = pct_above(price, entry)
         target_above_entry_pct = pct_above(target, entry)
 
         invalid_setup_levels = (
@@ -1236,6 +1288,9 @@ def get_swing_stock_data(symbol):
         if entry_above_price_pct > SWING_MAX_ENTRY_ABOVE_PRICE_PCT:
             score -= 2
 
+        if price_past_entry_pct > SWING_MAX_PRICE_PAST_ENTRY_PCT:
+            score -= 2
+
         score = max(0, min(score, 10))
 
         if risk <= 0:
@@ -1262,10 +1317,58 @@ def get_swing_stock_data(symbol):
         if entry_above_price_pct > SWING_BREAKOUT_CLOSE_PCT:
             blockers.append("price is not close enough to breakout trigger")
 
+        if price_past_entry_pct > SWING_MAX_PRICE_PAST_ENTRY_PCT:
+            blockers.append("price is too extended past the swing entry trigger")
+
+        ready_now_allowed = (
+            status in ["Swing Pullback", "Swing Base"]
+            and trend_up
+            and risk > 0
+            and reward > 0
+            and rr >= 1.5
+            and target_above_entry_pct <= SWING_MAX_TARGET_PCT
+            and entry_above_price_pct <= SWING_MAX_ENTRY_ABOVE_PRICE_PCT
+            and price_past_entry_pct <= SWING_MAX_PRICE_PAST_ENTRY_PCT
+            and not earnings_blocker
+            and not invalid_setup_levels
+        )
+
+        setup_is_good_watch = (
+            status in ["Swing Pullback", "Swing Base", "Swing Trend"]
+            and trend_up
+            and risk > 0
+            and reward > 0
+            and rr >= 1.5
+            and target_above_entry_pct <= SWING_MAX_TARGET_PCT
+            and not earnings_blocker
+            and not invalid_setup_levels
+        )
+
+        if ready_now_allowed and price >= entry:
+            decision = "TRADE"
+            action = "READY NOW"
+            entry_warning = "SWING READY ZONE"
+            level_note = "Swing setup is actionable at the current price."
+
+            if price_past_entry_pct > 0:
+                entry_warning = "SWING TRIGGER RECLAIMED"
+                level_note = "Swing trigger has been reclaimed and is not extended yet."
+        elif setup_is_good_watch:
+            decision = "WATCH"
+            action = "WAIT FOR SWING BREAK"
+
+            if entry_above_price_pct > SWING_MAX_ENTRY_ABOVE_PRICE_PCT:
+                action = "WAIT"
+        elif invalid_setup_levels:
+            decision = "PASS"
+            action = "PASS"
+
         sniper = "NO"
 
         if (
-            status in ["Swing Pullback", "Swing Base"]
+            decision == "TRADE"
+            and action == "READY NOW"
+            and status in ["Swing Pullback", "Swing Base"]
             and score >= 7
             and rr >= 1.5
             and risk > 0
@@ -1274,6 +1377,7 @@ def get_swing_stock_data(symbol):
             and extended_from_sma20_pct <= 8
             and target_above_entry_pct <= SWING_MAX_TARGET_PCT
             and entry_above_price_pct <= SWING_MAX_ENTRY_ABOVE_PRICE_PCT
+            and price_past_entry_pct <= SWING_MAX_PRICE_PAST_ENTRY_PCT
             and volume_ratio >= 0.70
             and not earnings_blocker
         ):
@@ -1281,14 +1385,16 @@ def get_swing_stock_data(symbol):
 
         grade = get_grade(score)
 
-        confidence = get_confidence(
+        confidence = get_swing_confidence(
             decision=decision,
             action=action,
-            sniper=sniper,
             score=score,
             rr=rr,
-            status=status,
-            entry_gap=entry_gap,
+            trend_up=trend_up,
+            entry_above_price_pct=entry_above_price_pct,
+            price_past_entry_pct=price_past_entry_pct,
+            target_above_entry_pct=target_above_entry_pct,
+            earnings_blocker=earnings_blocker,
         )
 
         trade_style = get_trade_style(
@@ -1323,6 +1429,8 @@ def get_swing_stock_data(symbol):
 
         reason = build_swing_reason(
             status=status,
+            decision=decision,
+            action=action,
             rr=rr,
             score=score,
             dist=dist,
