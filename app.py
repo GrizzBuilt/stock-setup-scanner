@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, jsonify, render_template, request, redirect, url_for
 
 import yfinance as yf
 
@@ -1581,10 +1581,7 @@ def add_focus_labels(stocks):
     return stocks
 
 
-@app.route("/")
-def home():
-    mode = normalize_mode(request.args.get("mode", "quick"))
-
+def build_scanner_payload(mode):
     symbols = get_watchlist()
     active_position = get_active_position()
 
@@ -1594,13 +1591,32 @@ def home():
     stocks.sort(key=scanner_sort_key)
     stocks = add_focus_labels(stocks)
 
+    return {
+        "stocks": stocks,
+        "active_position": active_position,
+        "mode": mode,
+        "last_updated": datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
+    }
+
+
+@app.route("/")
+def home():
+    mode = normalize_mode(request.args.get("mode", "quick"))
+    payload = build_scanner_payload(mode)
+
     return render_template(
         "index.html",
-        stocks=stocks,
-        active_position=active_position,
-        mode=mode,
-        last_updated=datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p"),
+        stocks=payload["stocks"],
+        active_position=payload["active_position"],
+        mode=payload["mode"],
+        last_updated=payload["last_updated"],
     )
+
+
+@app.route("/api/stocks")
+def api_stocks():
+    mode = normalize_mode(request.args.get("mode", "quick"))
+    return jsonify(build_scanner_payload(mode))
 
 
 @app.route("/position", methods=["POST"])

@@ -46,6 +46,18 @@ h1 {
     font-size: 0.95rem;
 }
 
+.refresh-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+#refreshStatus {
+    color: #9ca3af;
+    font-size: 0.9rem;
+    min-width: 92px;
+}
+
 .add-form {
     display: flex;
     gap: 8px;

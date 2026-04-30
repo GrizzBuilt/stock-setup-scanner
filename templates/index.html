@@ -12,7 +12,7 @@ Main changes:
 - Keeps collapsible detail rows
 - Keeps active position row expanded after auto-refresh
 - Reopens the last manually expanded row when no active position exists
-- Auto-refresh preserves the current mode query string
+- Auto-refresh updates scanner data in place without reloading the page
 -->
 
 <!DOCTYPE html>
@@ -36,7 +36,7 @@ Main changes:
             {% endif %}
 
             <div class="summary-row">
-                <p class="timestamp">Last updated: <strong>{{ last_updated }}</strong></p>
+                <p class="timestamp">Last updated: <strong id="lastUpdated">{{ last_updated }}</strong></p>
 
                 <form method="GET" action="/" class="mode-form">
                     <label for="mode">Mode</label>
@@ -45,30 +45,37 @@ Main changes:
                         <option value="swing" {% if mode == "swing" %}selected{% endif %}>Swing Trades 🌊</option>
                     </select>
                 </form>
+
+                <div class="refresh-controls">
+                    <button type="button" id="refreshDataBtn">Refresh Data</button>
+                    <span id="refreshStatus" aria-live="polite"></span>
+                </div>
             </div>
         </header>
 
         <section class="active-position-panel card">
             <h2>Active Position</h2>
 
-            {% if active_position %}
-                <div class="active-position-current">
-                    <p>
-                        <strong>Current Active Position:</strong>
-                        {{ active_position.symbol }}
-                        @ ${{ "%.2f"|format(active_position.entry) }}
-                        |
-                        Shares: {{ active_position.shares }}
-                    </p>
+            <div id="activePositionCurrent">
+                {% if active_position %}
+                    <div class="active-position-current">
+                        <p>
+                            <strong>Current Active Position:</strong>
+                            {{ active_position.symbol }}
+                            @ ${{ "%.2f"|format(active_position.entry) }}
+                            |
+                            Shares: {{ active_position.shares }}
+                        </p>
 
-                    <form action="{{ url_for('clear_position') }}" method="POST" class="clear-position-form">
-                        <input type="hidden" name="mode" value="{{ mode }}">
-                        <button type="submit" class="remove-btn">Clear Position</button>
-                    </form>
-                </div>
-            {% else %}
-                <p class="subtitle">No active position set.</p>
-            {% endif %}
+                        <form action="{{ url_for('clear_position') }}" method="POST" class="clear-position-form">
+                            <input type="hidden" name="mode" value="{{ mode }}">
+                            <button type="submit" class="remove-btn">Clear Position</button>
+                        </form>
+                    </div>
+                {% else %}
+                    <p class="subtitle">No active position set.</p>
+                {% endif %}
+            </div>
 
             <form action="{{ url_for('set_position') }}" method="POST" class="active-position-form">
                 <input type="hidden" name="mode" value="{{ mode }}">
@@ -142,7 +149,7 @@ Main changes:
                     </tr>
                 </thead>
 
-                <tbody>
+                <tbody id="stockRows">
                     {% for stock in stocks %}
                         <tr
                             class="
@@ -387,16 +394,68 @@ Main changes:
         const tradeOnly = document.getElementById("tradeOnly");
         const watchOnly = document.getElementById("watchOnly");
         const sniperOnly = document.getElementById("sniperOnly");
-        const mainRows = document.querySelectorAll(".main-row");
+        const stockRows = document.getElementById("stockRows");
+        const modeSelect = document.getElementById("mode");
+        const lastUpdated = document.getElementById("lastUpdated");
+        const refreshDataBtn = document.getElementById("refreshDataBtn");
+        const refreshStatus = document.getElementById("refreshStatus");
+        const activePositionCurrent = document.getElementById("activePositionCurrent");
 
         const OPEN_SYMBOL_KEY = "stockScannerOpenSymbol";
+        const REFRESH_INTERVAL_MS = 15000;
+        let isRefreshing = false;
+
+        function getMainRows() {
+            return document.querySelectorAll(".main-row");
+        }
 
         function getOpenDisplayValue() {
             return window.innerWidth <= 768 ? "block" : "table-row";
         }
 
+        function getCurrentMode() {
+            return modeSelect ? modeSelect.value : "quick";
+        }
+
         function getRowSymbol(row) {
             return row.dataset.symbol || "";
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        }
+
+        function className(value) {
+            return String(value || "")
+                .toLowerCase()
+                .replaceAll("+", "plus")
+                .replaceAll("/", "")
+                .replace(/\s+/g, "-");
+        }
+
+        function money(value) {
+            if (value === "—" || value === "" || value === null || value === undefined) {
+                return "—";
+            }
+
+            return value;
+        }
+
+        function collectOpenSymbols() {
+            const openSymbols = new Set();
+
+            document.querySelectorAll(".details-row.open").forEach(function (detailsRow) {
+                if (detailsRow.dataset.symbol) {
+                    openSymbols.add(detailsRow.dataset.symbol);
+                }
+            });
+
+            return openSymbols;
         }
 
         function closeDetails(row, shouldForget = true) {
@@ -442,12 +501,24 @@ Main changes:
         }
 
         function closeAllDetails() {
-            mainRows.forEach(function (row) {
+            getMainRows().forEach(function (row) {
                 closeDetails(row, false);
             });
         }
 
-        function openPreferredRowAfterRefresh() {
+        function openPreferredRowAfterRefresh(openSymbols = null) {
+            if (openSymbols) {
+                openSymbols.forEach(function (symbol) {
+                    const row = document.querySelector(`.main-row[data-symbol="${CSS.escape(symbol)}"]`);
+
+                    if (row) {
+                        openDetails(row, false);
+                    }
+                });
+
+                return;
+            }
+
             const activeRow = document.querySelector('.main-row[data-active="YES"]');
             const savedSymbol = localStorage.getItem(OPEN_SYMBOL_KEY);
 
@@ -457,7 +528,7 @@ Main changes:
             }
 
             if (savedSymbol) {
-                const savedRow = document.querySelector(`.main-row[data-symbol="${savedSymbol}"]`);
+                const savedRow = document.querySelector(`.main-row[data-symbol="${CSS.escape(savedSymbol)}"]`);
 
                 if (savedRow) {
                     openDetails(savedRow, true);
@@ -466,7 +537,7 @@ Main changes:
         }
 
         function applyFilters() {
-            mainRows.forEach(function (row) {
+            getMainRows().forEach(function (row) {
                 const decision = row.dataset.decision;
                 const sniper = row.dataset.sniper;
 
@@ -484,28 +555,245 @@ Main changes:
             });
         }
 
+        function renderActivePosition(activePosition) {
+            if (!activePosition) {
+                activePositionCurrent.innerHTML = '<p class="subtitle">No active position set.</p>';
+                return;
+            }
+
+            activePositionCurrent.innerHTML = `
+                <div class="active-position-current">
+                    <p>
+                        <strong>Current Active Position:</strong>
+                        ${escapeHtml(activePosition.symbol)}
+                        @ $${Number(activePosition.entry).toFixed(2)}
+                        |
+                        Shares: ${escapeHtml(activePosition.shares)}
+                    </p>
+
+                    <form action="/position/clear" method="POST" class="clear-position-form">
+                        <input type="hidden" name="mode" value="${escapeHtml(getCurrentMode())}">
+                        <button type="submit" class="remove-btn">Clear Position</button>
+                    </form>
+                </div>
+            `;
+        }
+
+        function renderActivePositionDetails(stock) {
+            if (stock.is_active_position) {
+                return `
+                    <div class="active-position-details">
+                        <h3>Active Position Management</h3>
+
+                        <p class="position-verdict">
+                            <strong>Position Verdict:</strong>
+                            ${escapeHtml(stock.position_verdict)}
+                        </p>
+
+                        <div class="details-grid">
+                            <div><span>Actual Entry</span><strong>$${escapeHtml(stock.actual_entry)}</strong></div>
+                            <div><span>Shares</span><strong>${escapeHtml(stock.actual_shares)}</strong></div>
+                            <div><span>P/L</span><strong>$${escapeHtml(stock.actual_pl)}</strong></div>
+                            <div><span>P/L Per Share</span><strong>$${escapeHtml(stock.actual_pl_per_share)}</strong></div>
+                            <div><span>Actual Entry Gap</span><strong>$${escapeHtml(stock.actual_entry_gap)}</strong></div>
+                            <div><span>Protect Level</span><strong>$${escapeHtml(stock.protect_level)}</strong></div>
+                            <div><span>Quick Profit</span><strong>$${escapeHtml(stock.quick_profit_level)}</strong></div>
+                            <div><span>Goal Profit</span><strong>$${escapeHtml(stock.goal_profit_level)}</strong></div>
+                            <div><span>Cut Level</span><strong>$${escapeHtml(stock.cut_level)}</strong></div>
+                        </div>
+
+                        <p class="management-cell">
+                            <strong>Position Plan:</strong>
+                            ${escapeHtml(stock.position_management)}
+                        </p>
+                    </div>
+                `;
+            }
+
+            if (stock.active_position_warning) {
+                return `<div class="wrong-ticker-warning">${escapeHtml(stock.active_position_warning)}</div>`;
+            }
+
+            return "";
+        }
+
+        function renderStockRows(stocks) {
+            return stocks.map(function (stock) {
+                const symbol = escapeHtml(stock.symbol);
+                const decisionClass = className(stock.decision);
+                const actionClass = className(stock.action);
+                const statusClass = className(stock.status);
+                const gradeClass = className(stock.grade);
+                const sniperClass = className(stock.sniper);
+                const distanceClass =
+                    stock.distance >= -0.25 && stock.distance <= 0.25
+                        ? "dist-close"
+                        : stock.distance >= -0.5 && stock.distance <= 1
+                            ? "dist-mid"
+                            : "dist-far";
+                const rrClass = stock.rr >= 2 ? "rr-good" : stock.rr >= 1.5 ? "rr-ok" : "rr-bad";
+                const focusLabel = stock.focus_label
+                    ? `<div class="focus-label">${escapeHtml(stock.focus_label)}</div>`
+                    : "";
+                const activeLabel = stock.is_active_position
+                    ? '<div class="active-label">ACTIVE</div>'
+                    : "";
+                const extendedClass = stock.status === "Extended" || stock.status === "Swing Extended"
+                    ? "extended-row"
+                    : "";
+                const activeClass = stock.is_active_position ? "active-position-row" : "";
+                const sniperRowClass = stock.sniper === "YES" ? "sniper-row" : "";
+
+                return `
+                    <tr
+                        class="main-row decision-row-${decisionClass} action-${actionClass} ${sniperRowClass} ${extendedClass} ${activeClass}"
+                        data-symbol="${symbol}"
+                        data-decision="${escapeHtml(stock.decision)}"
+                        data-sniper="${escapeHtml(stock.sniper)}"
+                        data-status="${escapeHtml(stock.status)}"
+                        data-active="${stock.is_active_position ? "YES" : "NO"}"
+                    >
+                        <td data-label="Symbol" class="symbol-cell">
+                            <strong data-field="symbol">${symbol}</strong>
+                            ${focusLabel}
+                            ${activeLabel}
+                        </td>
+
+                        <td data-label="Decision">
+                            <span data-field="decision" class="pill decision ${decisionClass}">${escapeHtml(stock.decision)}</span>
+                        </td>
+
+                        <td data-label="Sniper">
+                            <span data-field="sniper" class="pill sniper-${sniperClass}">${escapeHtml(stock.sniper)}</span>
+                        </td>
+
+                        <td data-label="Grade">
+                            <span data-field="grade" class="pill grade grade-${gradeClass}">${escapeHtml(stock.grade)}</span>
+                        </td>
+
+                        <td data-label="Score" class="score" data-field="score">${escapeHtml(stock.score)}/10</td>
+                        <td data-label="Action" class="action-text" data-field="action">${escapeHtml(stock.action)}</td>
+                        <td data-label="Status" class="status ${statusClass}" data-field="status">${escapeHtml(stock.status)}</td>
+                        <td data-label="Price" data-field="price">$${escapeHtml(money(stock.price))}</td>
+                        <td data-label="Change" data-field="percent">${escapeHtml(stock.percent)}%</td>
+                        <td data-label="Dist %" class="${distanceClass}" data-field="distance">${escapeHtml(stock.distance)}%</td>
+                        <td data-label="R/R" class="${rrClass}" data-field="rr">${escapeHtml(stock.rr)}</td>
+
+                        <td data-label="Details">
+                            <button type="button" class="expand-btn" aria-label="Expand ${symbol} details" aria-expanded="false">+</button>
+                        </td>
+                    </tr>
+
+                    <tr
+                        class="details-row"
+                        data-symbol="${symbol}"
+                        data-decision="${escapeHtml(stock.decision)}"
+                        data-sniper="${escapeHtml(stock.sniper)}"
+                        data-active="${stock.is_active_position ? "YES" : "NO"}"
+                    >
+                        <td colspan="12">
+                            <div class="details-content">
+                                ${renderActivePositionDetails(stock)}
+
+                                <div class="verdict-box">
+                                    <strong>Scanner Verdict:</strong>
+                                    <span data-field="verdict">${escapeHtml(stock.verdict)}</span>
+                                </div>
+
+                                <div class="details-grid">
+                                    <div><span>Entry</span><strong data-field="entry">${escapeHtml(stock.entry)}</strong></div>
+                                    <div><span>Stop</span><strong data-field="stop">${escapeHtml(stock.stop)}</strong></div>
+                                    <div><span>Target</span><strong data-field="target">${escapeHtml(stock.target)}</strong></div>
+                                    <div><span>Risk / Reward</span><strong data-field="rr">${escapeHtml(stock.rr)}</strong></div>
+                                    <div><span>Confidence</span><strong data-field="confidence">${escapeHtml(stock.confidence)}</strong></div>
+                                    <div><span>Trade Style</span><strong data-field="trade_style">${escapeHtml(stock.trade_style)}</strong></div>
+                                    <div><span>Entry Gap</span><strong data-field="entry_gap">$${escapeHtml(stock.entry_gap)}</strong></div>
+                                    <div><span>Entry Warning</span><strong data-field="entry_warning">${escapeHtml(stock.entry_warning)}</strong></div>
+                                </div>
+
+                                <p class="management-cell">
+                                    <strong>Management:</strong>
+                                    <span data-field="management">${escapeHtml(stock.management)}</span>
+                                </p>
+
+                                <p class="reason-cell">
+                                    <strong>Reason:</strong>
+                                    <span data-field="reason">${escapeHtml(stock.reason)}</span>
+                                </p>
+
+                                <form method="POST" action="/remove/${encodeURIComponent(stock.symbol)}">
+                                    <input type="hidden" name="mode" value="${escapeHtml(getCurrentMode())}">
+                                    <button type="submit" class="remove-btn">Remove ${symbol}</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join("");
+        }
+
+        function replaceScannerRows(stocks, openSymbols) {
+            stockRows.innerHTML = renderStockRows(stocks);
+            openPreferredRowAfterRefresh(openSymbols);
+            applyFilters();
+        }
+
+        async function refreshScannerData() {
+            if (isRefreshing) {
+                return;
+            }
+
+            isRefreshing = true;
+            const openSymbols = collectOpenSymbols();
+            refreshStatus.textContent = "Updating...";
+            refreshDataBtn.disabled = true;
+
+            try {
+                const response = await fetch(`/api/stocks?mode=${encodeURIComponent(getCurrentMode())}`, {
+                    headers: {
+                        "Accept": "application/json",
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error("Bad response");
+                }
+
+                const data = await response.json();
+                lastUpdated.textContent = data.last_updated;
+                renderActivePosition(data.active_position);
+                replaceScannerRows(data.stocks, openSymbols);
+                refreshStatus.textContent = "Updated";
+            } catch (error) {
+                refreshStatus.textContent = "Update failed";
+            } finally {
+                isRefreshing = false;
+                refreshDataBtn.disabled = false;
+            }
+        }
+
         closeAllDetails();
         openPreferredRowAfterRefresh();
 
-        document.querySelectorAll(".expand-btn").forEach(function (button) {
-            button.setAttribute("aria-expanded", "false");
+        stockRows.addEventListener("click", function (event) {
+            const button = event.target.closest(".expand-btn");
 
-            button.addEventListener("click", function () {
-                const row = button.closest("tr");
-                const detailsRow = row.nextElementSibling;
+            if (!button) {
+                return;
+            }
 
-                if (!detailsRow) {
-                    return;
-                }
+            const row = button.closest("tr");
+            const detailsRow = row.nextElementSibling;
 
-                const isOpen = detailsRow.classList.contains("open");
+            if (!detailsRow) {
+                return;
+            }
 
-                if (isOpen) {
-                    closeDetails(row, true);
-                } else {
-                    openDetails(row, true);
-                }
-            });
+            if (detailsRow.classList.contains("open")) {
+                closeDetails(row, true);
+            } else {
+                openDetails(row, true);
+            }
         });
 
         window.addEventListener("resize", function () {
@@ -517,11 +805,9 @@ Main changes:
         tradeOnly.addEventListener("change", applyFilters);
         watchOnly.addEventListener("change", applyFilters);
         sniperOnly.addEventListener("change", applyFilters);
+        refreshDataBtn.addEventListener("click", refreshScannerData);
 
-        setInterval(function () {
-            const currentUrl = new URL(window.location.href);
-            window.location.href = currentUrl.toString();
-        }, 15000);
+        setInterval(refreshScannerData, REFRESH_INTERVAL_MS);
     </script>
 </body>
 </html>
