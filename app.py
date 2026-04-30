@@ -1,12 +1,8 @@
 # File: app.py
 # Purpose: Flask stock scanner with setup scoring, Sniper Mode,
 # entry-gap chase protection, SQLite Active Position Mode,
-# and optional Quick / Swing scanner modes.
-#
-# Notes:
-# - Quick mode preserves the existing scanner logic.
-# - Swing mode adds slower trend/pullback thinking without removing
-#   active position management or current quick-trade behavior.
+# optional Quick / Swing scanner modes,
+# earnings awareness, volume confirmation, and stronger active trade protection.
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -37,6 +33,54 @@ def normalize_mode(mode):
         return "quick"
 
     return mode
+
+
+def get_earnings_blocker(ticker):
+    """
+    Best-effort earnings awareness.
+    yfinance earnings calendar can vary by symbol/API response, so this is intentionally safe.
+    Returns a blocker string if earnings appear to be within the next 2 calendar days.
+    """
+    try:
+        calendar = ticker.calendar
+
+        if calendar is None:
+            return ""
+
+        earnings_value = None
+
+        if isinstance(calendar, dict):
+            earnings_value = calendar.get("Earnings Date") or calendar.get("EarningsDate")
+        else:
+            try:
+                if "Earnings Date" in calendar.index:
+                    earnings_value = calendar.loc["Earnings Date"][0]
+            except Exception:
+                pass
+
+        if earnings_value is None:
+            return ""
+
+        if isinstance(earnings_value, (list, tuple)):
+            earnings_value = earnings_value[0]
+
+        if hasattr(earnings_value, "to_pydatetime"):
+            earnings_date = earnings_value.to_pydatetime().date()
+        elif hasattr(earnings_value, "date"):
+            earnings_date = earnings_value.date()
+        else:
+            return ""
+
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        days_until = (earnings_date - today).days
+
+        if 0 <= days_until <= 2:
+            return f"earnings within {days_until} day(s)"
+
+    except Exception:
+        return ""
+
+    return ""
 
 
 def add_empty_position_fields(stock):
@@ -312,6 +356,7 @@ def build_reason(
             return (
                 f"{prefix} Breakout triggered. RR {round(rr, 2)}. "
                 f"Score {score}/10. Trade is valid now, but manage based on trade style."
+                f"{blocker_text}"
             )
         return (
             f"{prefix} Breakout triggered, but not clean enough yet. "
@@ -329,6 +374,7 @@ def build_reason(
             return (
                 f"{prefix} Pullback bounce confirmed. RR {round(rr, 2)}. "
                 f"Score {score}/10. Trade is valid now, but manage based on trade style."
+                f"{blocker_text}"
             )
         return (
             f"{prefix} Pullback setup forming. Waiting for bounce confirmation. "
@@ -397,6 +443,13 @@ def build_position_verdict(
             "Trail it, but do not let it come back under your protect level."
         )
 
+    elif pl_per_share >= 1.00:
+        verdict = "GOAL HIT — TAKE PROFIT OR TRAIL TIGHT"
+        management = (
+            "You are up more than $1.00/share. This is the goal zone. "
+            "Taking profit is valid. If holding, trail tight and protect green."
+        )
+
     elif pl_per_share >= 0.50:
         verdict = "TAKE PROFIT OK — PROTECT GREEN"
         management = (
@@ -404,11 +457,18 @@ def build_position_verdict(
             "If you hold, protect entry and do not let the trade turn red."
         )
 
+    elif pl_per_share >= 0.25:
+        verdict = "SMALL GREEN — MOVE TOWARD BREAKEVEN PROTECTION"
+        management = (
+            "You are green, but not at the quick profit goal yet. "
+            "Start thinking protection. If momentum stalls, do not let it flip red."
+        )
+
     elif pl_per_share > 0:
         verdict = "GREEN — PROTECT ENTRY"
         management = (
-            "You are green but not at the quick profit goal yet. "
-            "Let it try, but protect your actual entry."
+            "You are green but barely. Let it try, but protect your actual entry. "
+            "Do not let a clean green trade turn red."
         )
 
     elif -0.50 < pl_per_share <= 0:
@@ -525,6 +585,12 @@ def get_quick_stock_data(symbol):
 
         dist = ((price - prev_high) / prev_high) * 100
 
+        avg_volume = float(data["Volume"].tail(5).mean())
+        current_volume = float(row["Volume"])
+        volume_ratio = current_volume / avg_volume if avg_volume else 0
+
+        earnings_blocker = get_earnings_blocker(ticker)
+
         status = "Not Near Setup"
         decision = "WATCH"
         action = "WAIT"
@@ -595,11 +661,25 @@ def get_quick_stock_data(symbol):
         if reward > 0:
             score += 1
 
+        # Volume confirmation.
+        if volume_ratio >= 1.50:
+            score += 1
+        elif status in ["Breakout Triggered", "Pullback"] and volume_ratio < 0.80:
+            score -= 1
+
+        # Earnings awareness.
+        if earnings_blocker:
+            score -= 2
+
+        # Entry/chase protection.
         if entry_gap > 0.50:
             score -= 1
 
         if entry_gap > 1.00:
             score -= 2
+
+        if status == "Breakout Triggered" and dist > 0.50:
+            score -= 1
 
         if status == "Extended":
             score -= 2
@@ -617,6 +697,9 @@ def get_quick_stock_data(symbol):
 
         blockers = []
 
+        if earnings_blocker:
+            blockers.append(earnings_blocker)
+
         if status == "Extended":
             blockers.append("too extended")
 
@@ -631,6 +714,12 @@ def get_quick_stock_data(symbol):
 
         if status in ["Breakout Triggered", "Pullback"] and score < 7:
             blockers.append("score below trade quality")
+
+        if status in ["Breakout Triggered", "Pullback"] and volume_ratio < 0.80:
+            blockers.append("low volume confirmation")
+
+        if status == "Breakout Triggered" and dist > 0.50:
+            blockers.append("breakout is already stretched; avoid chasing")
 
         if status in ["Breakout Triggered", "Pullback"] and entry_gap > 0.50:
             blockers.append("late entry; price is more than $0.50 above scanner entry")
@@ -691,6 +780,8 @@ def get_quick_stock_data(symbol):
             and rr >= 1.5
             and 0 < dist <= 0.5
             and entry_gap <= 0.50
+            and volume_ratio >= 0.80
+            and not earnings_blocker
         )
 
         clean_pullback_sniper = (
@@ -704,6 +795,8 @@ def get_quick_stock_data(symbol):
             and price > open_price
             and price > stop
             and entry_gap <= 0.50
+            and volume_ratio >= 0.80
+            and not earnings_blocker
         )
 
         if clean_breakout_sniper or clean_pullback_sniper:
@@ -811,11 +904,8 @@ def get_swing_stock_data(symbol):
 
         price = float(row["Close"])
         open_price = float(row["Open"])
-        high = float(row["High"])
-        low = float(row["Low"])
 
         prev_high = float(prev["High"])
-        prev_low = float(prev["Low"])
 
         percent = ((price - open_price) / open_price) * 100 if open_price else 0
         dist = ((price - prev_high) / prev_high) * 100 if prev_high else 0
@@ -832,13 +922,14 @@ def get_swing_stock_data(symbol):
         recent_10 = data.tail(10)
 
         recent_high_20 = float(recent_20["High"].max())
-        recent_low_20 = float(recent_20["Low"].min())
         recent_high_10 = float(recent_10["High"].max())
         recent_low_10 = float(recent_10["Low"].min())
 
         avg_volume_20 = float(volume_series.tail(20).mean())
         current_volume = float(row["Volume"])
         volume_ratio = current_volume / avg_volume_20 if avg_volume_20 else 0
+
+        earnings_blocker = get_earnings_blocker(ticker)
 
         trend_up = price > sma20 and sma20 > sma50
         above_sma50 = price > sma50
@@ -870,6 +961,9 @@ def get_swing_stock_data(symbol):
         target = entry + ((entry - stop) * 2)
 
         blockers = []
+
+        if earnings_blocker:
+            blockers.append(earnings_blocker)
 
         if not trend_up:
             blockers.append("trend not confirmed")
@@ -942,6 +1036,9 @@ def get_swing_stock_data(symbol):
         if volume_ratio >= 1:
             score += 1
 
+        if volume_ratio >= 1.50:
+            score += 1
+
         if rr >= 1.5:
             score += 1
 
@@ -953,6 +1050,9 @@ def get_swing_stock_data(symbol):
 
         if reward > 0:
             score += 1
+
+        if earnings_blocker:
+            score -= 2
 
         if status == "Swing Extended":
             score -= 3
@@ -990,6 +1090,8 @@ def get_swing_stock_data(symbol):
             and reward > 0
             and trend_up
             and extended_from_sma20_pct <= 8
+            and volume_ratio >= 0.70
+            and not earnings_blocker
         ):
             sniper = "YES"
 
