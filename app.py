@@ -154,6 +154,9 @@ def add_empty_position_fields(stock):
             "active_position_warning": "",
             "actual_entry": "",
             "actual_shares": "",
+            "capital_in": "",
+            "current_value": "",
+            "percent_gain": "",
             "actual_pl": 0,
             "actual_pl_per_share": 0,
             "actual_entry_gap": 0,
@@ -622,12 +625,15 @@ def build_position_verdict(
     current_price,
     actual_entry,
     shares,
+    capital_in,
     scanner_entry,
     sniper,
     trade_style,
 ):
     pl_per_share = current_price - actual_entry
     total_pl = pl_per_share * shares
+    current_value = current_price * shares
+    percent_gain = (pl_per_share / actual_entry) * 100 if actual_entry else 0
     actual_entry_gap = actual_entry - scanner_entry
 
     protect_level = actual_entry
@@ -704,6 +710,9 @@ def build_position_verdict(
     return {
         "actual_pl": round(total_pl, 2),
         "actual_pl_per_share": round(pl_per_share, 2),
+        "capital_in": round(capital_in, 2),
+        "current_value": round(current_value, 2),
+        "percent_gain": round(percent_gain, 2),
         "actual_entry_gap": round(actual_entry_gap, 2),
         "protect_level": round(protect_level, 2),
         "green_protect": round(green_protect, 2) if green_protect != "" else "",
@@ -725,6 +734,7 @@ def apply_active_position_to_stocks(stocks, active_position):
     active_symbol = active_position["symbol"].upper().strip()
     actual_entry = float(active_position["entry"])
     shares = float(active_position["shares"])
+    capital_in = float(active_position.get("capital") or (actual_entry * shares))
 
     found_active_row = False
 
@@ -740,7 +750,8 @@ def apply_active_position_to_stocks(stocks, active_position):
         found_active_row = True
         stock["is_active_position"] = True
         stock["actual_entry"] = round(actual_entry, 2)
-        stock["actual_shares"] = shares
+        stock["actual_shares"] = round(shares, 5)
+        stock["capital_in"] = round(capital_in, 2)
         stock["active_position_warning"] = "ACTIVE POSITION — MANAGE THIS TICKER"
 
         try:
@@ -755,6 +766,7 @@ def apply_active_position_to_stocks(stocks, active_position):
             current_price=current_price,
             actual_entry=actual_entry,
             shares=shares,
+            capital_in=capital_in,
             scanner_entry=scanner_entry,
             sniper=stock.get("sniper", "NO"),
             trade_style=stock.get("trade_style", "AVOID"),
@@ -1686,13 +1698,15 @@ def set_position():
     symbol = request.form.get("position_symbol", "").upper().strip()
     entry_raw = request.form.get("position_entry", "").strip()
     shares_raw = request.form.get("position_shares", "").strip()
+    capital_raw = request.form.get("position_capital", "").strip()
 
     try:
         entry = float(entry_raw)
-        shares = float(shares_raw)
+        shares = float(shares_raw) if shares_raw else 0
+        capital = float(capital_raw) if capital_raw else 0
 
-        if symbol and entry > 0 and shares > 0:
-            set_active_position(symbol, entry, shares)
+        if symbol and entry > 0 and (shares > 0 or capital > 0):
+            set_active_position(symbol, entry, shares=shares, capital=capital)
 
     except ValueError:
         pass

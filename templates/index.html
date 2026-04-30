@@ -64,7 +64,9 @@ Main changes:
                             {{ active_position.symbol }}
                             @ ${{ "%.2f"|format(active_position.entry) }}
                             |
-                            Shares: {{ active_position.shares }}
+                            Capital: ${{ "%.2f"|format(active_position.capital or (active_position.entry * active_position.shares)) }}
+                            |
+                            Shares: {{ "%.5f"|format(active_position.shares) }}
                         </p>
 
                         <form action="{{ url_for('clear_position') }}" method="POST" class="clear-position-form">
@@ -97,10 +99,16 @@ Main changes:
 
                 <input
                     type="number"
-                    step="0.0001"
+                    step="0.00001"
                     name="position_shares"
-                    placeholder="Shares"
-                    required
+                    placeholder="Shares, ex: 0.38893"
+                >
+
+                <input
+                    type="number"
+                    step="0.01"
+                    name="position_capital"
+                    placeholder="Dollars invested, ex: 102.00"
                 >
 
                 <button type="submit">Set Active Position</button>
@@ -264,6 +272,11 @@ Main changes:
 
                                             <div class="details-grid">
                                                 <div>
+                                                    <span>Capital In</span>
+                                                    <strong>${{ stock.capital_in }}</strong>
+                                                </div>
+
+                                                <div>
                                                     <span>Actual Entry</span>
                                                     <strong>${{ stock.actual_entry }}</strong>
                                                 </div>
@@ -274,13 +287,23 @@ Main changes:
                                                 </div>
 
                                                 <div>
-                                                    <span>P/L</span>
+                                                    <span>Current Value</span>
+                                                    <strong>${{ stock.current_value }}</strong>
+                                                </div>
+
+                                                <div>
+                                                    <span>Actual P/L</span>
                                                     <strong>${{ stock.actual_pl }}</strong>
                                                 </div>
 
                                                 <div>
                                                     <span>P/L Per Share</span>
                                                     <strong>${{ stock.actual_pl_per_share }}</strong>
+                                                </div>
+
+                                                <div>
+                                                    <span>Percent Gain</span>
+                                                    <strong>{{ stock.percent_gain }}%</strong>
                                                 </div>
 
                                                 <div>
@@ -606,7 +629,9 @@ Main changes:
                         ${escapeHtml(activePosition.symbol)}
                         @ $${Number(activePosition.entry).toFixed(2)}
                         |
-                        Shares: ${escapeHtml(activePosition.shares)}
+                        Capital: $${Number(activePosition.capital || (activePosition.entry * activePosition.shares)).toFixed(2)}
+                        |
+                        Shares: ${Number(activePosition.shares).toFixed(5)}
                     </p>
 
                     <form action="/position/clear" method="POST" class="clear-position-form">
@@ -629,10 +654,13 @@ Main changes:
                         </p>
 
                         <div class="details-grid">
+                            <div><span>Capital In</span><strong>$${escapeHtml(stock.capital_in)}</strong></div>
                             <div><span>Actual Entry</span><strong>$${escapeHtml(stock.actual_entry)}</strong></div>
                             <div><span>Shares</span><strong>${escapeHtml(stock.actual_shares)}</strong></div>
-                            <div><span>P/L</span><strong>$${escapeHtml(stock.actual_pl)}</strong></div>
+                            <div><span>Current Value</span><strong>$${escapeHtml(stock.current_value)}</strong></div>
+                            <div><span>Actual P/L</span><strong>$${escapeHtml(stock.actual_pl)}</strong></div>
                             <div><span>P/L Per Share</span><strong>$${escapeHtml(stock.actual_pl_per_share)}</strong></div>
+                            <div><span>Percent Gain</span><strong>${escapeHtml(stock.percent_gain)}%</strong></div>
                             <div><span>Actual Entry Gap</span><strong>$${escapeHtml(stock.actual_entry_gap)}</strong></div>
                             <div><span>Protect Level</span><strong>$${escapeHtml(stock.protect_level)}</strong></div>
                             <div><span>Green Protect</span><strong>${stock.green_protect ? "$" + escapeHtml(stock.green_protect) : "—"}</strong></div>

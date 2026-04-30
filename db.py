@@ -29,10 +29,19 @@ def init_db():
             symbol TEXT NOT NULL,
             entry REAL NOT NULL,
             shares REAL NOT NULL,
+            capital REAL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    active_position_columns = [
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(active_position)").fetchall()
+    ]
+
+    if "capital" not in active_position_columns:
+        conn.execute("ALTER TABLE active_position ADD COLUMN capital REAL")
 
     default_symbols = [
         "NVDA",
@@ -99,7 +108,7 @@ def remove_symbol(symbol):
 def get_active_position():
     conn = get_connection()
     row = conn.execute("""
-        SELECT symbol, entry, shares
+        SELECT symbol, entry, shares, capital
         FROM active_position
         WHERE id = 1
     """).fetchone()
@@ -112,31 +121,42 @@ def get_active_position():
         "symbol": row["symbol"],
         "entry": row["entry"],
         "shares": row["shares"],
+        "capital": row["capital"],
     }
 
 
-def set_active_position(symbol, entry, shares):
+def set_active_position(symbol, entry, shares=None, capital=None):
     symbol = symbol.upper().strip()
 
     if not symbol:
         return
 
     entry = float(entry)
-    shares = float(shares)
+    shares = float(shares) if shares not in [None, ""] else 0
+    capital = float(capital) if capital not in [None, ""] else 0
 
-    if entry <= 0 or shares <= 0:
+    if entry <= 0:
+        return
+
+    if shares <= 0 and capital > 0:
+        shares = capital / entry
+    elif capital <= 0 and shares > 0:
+        capital = shares * entry
+
+    if shares <= 0 or capital <= 0:
         return
 
     conn = get_connection()
     conn.execute("""
-        INSERT INTO active_position (id, symbol, entry, shares, updated_at)
-        VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO active_position (id, symbol, entry, shares, capital, updated_at)
+        VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
             symbol = excluded.symbol,
             entry = excluded.entry,
             shares = excluded.shares,
+            capital = excluded.capital,
             updated_at = CURRENT_TIMESTAMP
-    """, (symbol, entry, shares))
+    """, (symbol, entry, shares, capital))
 
     conn.commit()
     conn.close()
