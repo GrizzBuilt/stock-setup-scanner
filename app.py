@@ -158,6 +158,7 @@ def add_empty_position_fields(stock):
             "actual_pl_per_share": 0,
             "actual_entry_gap": 0,
             "protect_level": "",
+            "green_protect": "",
             "quick_profit_level": "",
             "goal_profit_level": "",
             "cut_level": "",
@@ -630,6 +631,7 @@ def build_position_verdict(
     actual_entry_gap = actual_entry - scanner_entry
 
     protect_level = actual_entry
+    green_protect = ""
     quick_profit_level = actual_entry + 0.50
     goal_profit_level = actual_entry + 1.00
     cut_level = actual_entry - 0.50
@@ -649,19 +651,13 @@ def build_position_verdict(
     else:
         entry_gap_warning = "Your entry is better than scanner entry."
 
-    if pl_per_share >= 1.00 and sniper == "YES":
-        verdict = "TRAIL WITH CONFIDENCE — LOCK PROFIT"
+    if pl_per_share >= 1.00:
+        green_protect = max(actual_entry, actual_entry + (pl_per_share * 0.50))
         management = (
-            "You are up more than $1.00/share on a Sniper setup. "
-            "Trail it, but do not let it come back under your protect level."
+            f"You are up more than $1.00/share. This is the goal zone. "
+            f"Take profit, or trail near ${round(green_protect, 2)} and protect green."
         )
-
-    elif pl_per_share >= 1.00:
         verdict = "GOAL HIT — TAKE PROFIT OR TRAIL TIGHT"
-        management = (
-            "You are up more than $1.00/share. This is the goal zone. "
-            "Taking profit is valid. If holding, trail tight and protect green."
-        )
 
     elif pl_per_share >= 0.50:
         verdict = "TAKE PROFIT OK — PROTECT GREEN"
@@ -710,6 +706,7 @@ def build_position_verdict(
         "actual_pl_per_share": round(pl_per_share, 2),
         "actual_entry_gap": round(actual_entry_gap, 2),
         "protect_level": round(protect_level, 2),
+        "green_protect": round(green_protect, 2) if green_protect != "" else "",
         "quick_profit_level": round(quick_profit_level, 2),
         "goal_profit_level": round(goal_profit_level, 2),
         "cut_level": round(cut_level, 2),

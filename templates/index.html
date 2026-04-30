@@ -294,6 +294,17 @@ Main changes:
                                                 </div>
 
                                                 <div>
+                                                    <span>Green Protect</span>
+                                                    <strong>
+                                                        {% if stock.green_protect %}
+                                                            ${{ stock.green_protect }}
+                                                        {% else %}
+                                                            —
+                                                        {% endif %}
+                                                    </strong>
+                                                </div>
+
+                                                <div>
                                                     <span>Quick Profit</span>
                                                     <strong>${{ stock.quick_profit_level }}</strong>
                                                 </div>
@@ -624,6 +635,7 @@ Main changes:
                             <div><span>P/L Per Share</span><strong>$${escapeHtml(stock.actual_pl_per_share)}</strong></div>
                             <div><span>Actual Entry Gap</span><strong>$${escapeHtml(stock.actual_entry_gap)}</strong></div>
                             <div><span>Protect Level</span><strong>$${escapeHtml(stock.protect_level)}</strong></div>
+                            <div><span>Green Protect</span><strong>${stock.green_protect ? "$" + escapeHtml(stock.green_protect) : "—"}</strong></div>
                             <div><span>Quick Profit</span><strong>$${escapeHtml(stock.quick_profit_level)}</strong></div>
                             <div><span>Goal Profit</span><strong>$${escapeHtml(stock.goal_profit_level)}</strong></div>
                             <div><span>Cut Level</span><strong>$${escapeHtml(stock.cut_level)}</strong></div>
