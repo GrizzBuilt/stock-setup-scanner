@@ -4,6 +4,8 @@
 # optional Quick / Swing scanner modes,
 # earnings awareness, volume confirmation, and stronger active trade protection.
 
+import os
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -24,6 +26,10 @@ from db import (
 app = Flask(__name__)
 
 VALID_MODES = ["quick", "swing"]
+SWING_REWARD_MULTIPLE = 1.75
+SWING_MAX_TARGET_PCT = 10
+SWING_MAX_ENTRY_ABOVE_PRICE_PCT = 5
+SWING_BREAKOUT_CLOSE_PCT = 3
 
 
 def normalize_mode(mode):
@@ -402,6 +408,103 @@ def get_entry_warning(entry_gap):
         return "LATE ENTRY / QUICK TRADE ONLY"
 
     return "DO NOT CHASE"
+
+
+def calculate_atr(data, period=14):
+    previous_close = data["Close"].shift(1)
+    true_range = data["High"] - data["Low"]
+    high_close_range = (data["High"] - previous_close).abs()
+    low_close_range = (data["Low"] - previous_close).abs()
+    atr = true_range.combine(high_close_range, max).combine(low_close_range, max)
+
+    return float(atr.tail(period).mean())
+
+
+def pct_above(value, base):
+    if not base:
+        return 0
+
+    return ((value - base) / base) * 100
+
+
+def build_swing_reason(
+    status,
+    rr,
+    score,
+    dist,
+    blockers,
+    confidence,
+    trade_style,
+    entry_gap,
+    entry_warning,
+    price,
+    entry,
+    stop,
+    target,
+    level_note,
+):
+    blocker_text = ""
+
+    if blockers:
+        blocker_text = " Blocker: " + "; ".join(blockers) + "."
+
+    prefix = f"{trade_style}. Confidence: {confidence}. Entry: {entry_warning}."
+    level_text = (
+        f" Levels: entry {round(entry, 2)}, stop {round(stop, 2)}, "
+        f"target {round(target, 2)}."
+    )
+
+    if level_note:
+        level_text = f" {level_note}{level_text}"
+
+    if status == "Swing Pullback":
+        return (
+            f"{prefix} Swing watch: pullback inside an uptrend. "
+            f"Current price is {round(price, 2)}. "
+            f"RR {round(rr, 2)}. Score {score}/10.{level_text}{blocker_text}"
+        )
+
+    if status == "Swing Base":
+        return (
+            f"{prefix} Swing watch: base forming near trend support. "
+            f"Current price is {round(price, 2)}. "
+            f"RR {round(rr, 2)}. Score {score}/10.{level_text}{blocker_text}"
+        )
+
+    if status == "Swing Trend":
+        return (
+            f"{prefix} Uptrend is intact, but price has not pulled back enough "
+            f"for a cleaner swing entry. Current price is {round(price, 2)}. "
+            f"RR {round(rr, 2)}. Score {score}/10.{level_text}{blocker_text}"
+        )
+
+    if status == "Swing Extended":
+        return (
+            f"{prefix} Trend is strong, but price is stretched above the 20-day "
+            f"average. Current price is {round(price, 2)}. "
+            f"Do not chase a swing entry here.{level_text}{blocker_text}"
+        )
+
+    if status == "No Swing Setup":
+        return (
+            f"{prefix} No clean swing structure yet. Current price is "
+            f"{round(price, 2)}. Wait for trend, pullback, base, or breakout "
+            f"confirmation.{level_text}{blocker_text}"
+        )
+
+    return build_reason(
+        status=status,
+        decision="WATCH",
+        action="WAIT",
+        rr=rr,
+        score=score,
+        dist=dist,
+        blockers=blockers,
+        confidence=confidence,
+        trade_style=trade_style,
+        entry_gap=entry_gap,
+        entry_warning=entry_warning,
+    )
 
 
 def build_position_verdict(
@@ -920,14 +1023,17 @@ def get_swing_stock_data(symbol):
 
         recent_20 = data.tail(20)
         recent_10 = data.tail(10)
+        recent_5 = data.tail(5)
 
         recent_high_20 = float(recent_20["High"].max())
         recent_high_10 = float(recent_10["High"].max())
         recent_low_10 = float(recent_10["Low"].min())
+        recent_low_5 = float(recent_5["Low"].min())
 
         avg_volume_20 = float(volume_series.tail(20).mean())
         current_volume = float(row["Volume"])
         volume_ratio = current_volume / avg_volume_20 if avg_volume_20 else 0
+        atr = calculate_atr(data)
 
         earnings_blocker = get_earnings_blocker(ticker)
 
@@ -955,10 +1061,6 @@ def get_swing_stock_data(symbol):
         status = "No Swing Setup"
         decision = "WATCH"
         action = "WAIT"
-
-        entry = recent_high_10
-        stop = min(recent_low_10, sma20)
-        target = entry + ((entry - stop) * 2)
 
         blockers = []
 
@@ -1002,13 +1104,75 @@ def get_swing_stock_data(symbol):
             decision = "WATCH"
             action = "WAIT"
 
+        breakout_trigger = recent_high_10
+        breakout_trigger_gap_pct = pct_above(breakout_trigger, price)
+        level_note = ""
+
+        if status == "Swing Pullback":
+            if 0 <= breakout_trigger_gap_pct <= SWING_BREAKOUT_CLOSE_PCT:
+                entry = breakout_trigger
+                entry_warning = "SWING BREAKOUT TRIGGER"
+                level_note = (
+                    f"Swing watch: price below breakout trigger. Entry near "
+                    f"{round(entry, 2)} only if price reclaims resistance."
+                )
+            else:
+                entry = price
+                entry_warning = "PULLBACK WATCH ZONE"
+                level_note = "Swing watch: pullback is forming near current price."
+
+        elif status == "Swing Base":
+            if 0 <= breakout_trigger_gap_pct <= SWING_BREAKOUT_CLOSE_PCT:
+                entry = breakout_trigger
+                entry_warning = "BASE BREAKOUT TRIGGER"
+                level_note = (
+                    f"Swing watch: base trigger is {round(entry, 2)}. "
+                    "Wait for a clean reclaim before treating it as actionable."
+                )
+            else:
+                entry = price
+                entry_warning = "BASE WATCH ZONE"
+                level_note = "Swing watch: base is forming, but breakout trigger is not close."
+
+        elif status == "Swing Trend":
+            entry = price
+            entry_warning = "TREND WATCH ZONE"
+            level_note = "Swing watch: trend is intact, but no clean trigger is active."
+
+        else:
+            entry = price
+            entry_warning = "NO SWING ENTRY"
+            level_note = "No valid swing entry trigger is active."
+
+        support_stop = min(recent_low_5, float(row["Low"]))
+        atr_stop = entry - (2 * atr)
+        max_risk_stop = entry * 0.95
+        stop = max(support_stop - (0.25 * atr), atr_stop, max_risk_stop)
+        target = entry + ((entry - stop) * SWING_REWARD_MULTIPLE)
+
         risk = entry - stop
         reward = target - entry
         rr = reward / risk if risk > 0 else 0
 
         entry_gap = price - entry
         entry_gap_pct = (entry_gap / entry) * 100 if entry else 0
-        entry_warning = "SWING WAIT ZONE"
+        entry_above_price_pct = pct_above(entry, price)
+        target_above_entry_pct = pct_above(target, entry)
+
+        invalid_setup_levels = (
+            risk <= 0
+            or reward <= 0
+            or stop <= 0
+            or target <= entry
+            or entry <= 0
+        )
+
+        if invalid_setup_levels:
+            status = "No Swing Setup"
+            decision = "PASS"
+            action = "PASS"
+            entry_warning = "INVALID SETUP LEVELS"
+            level_note = "Invalid setup levels."
 
         score = 0
 
@@ -1066,6 +1230,12 @@ def get_swing_stock_data(symbol):
         if risk <= 0:
             score -= 2
 
+        if target_above_entry_pct > SWING_MAX_TARGET_PCT:
+            score -= 2
+
+        if entry_above_price_pct > SWING_MAX_ENTRY_ABOVE_PRICE_PCT:
+            score -= 2
+
         score = max(0, min(score, 10))
 
         if risk <= 0:
@@ -1080,6 +1250,18 @@ def get_swing_stock_data(symbol):
         if status in ["Swing Pullback", "Swing Base"] and score < 6:
             blockers.append("swing score not strong enough yet")
 
+        if invalid_setup_levels:
+            blockers.append("invalid setup levels")
+
+        if target_above_entry_pct > SWING_MAX_TARGET_PCT:
+            blockers.append("target is too far above entry for normal swing mode")
+
+        if entry_above_price_pct > SWING_MAX_ENTRY_ABOVE_PRICE_PCT:
+            blockers.append("entry trigger is too far above current price")
+
+        if entry_above_price_pct > SWING_BREAKOUT_CLOSE_PCT:
+            blockers.append("price is not close enough to breakout trigger")
+
         sniper = "NO"
 
         if (
@@ -1090,6 +1272,8 @@ def get_swing_stock_data(symbol):
             and reward > 0
             and trend_up
             and extended_from_sma20_pct <= 8
+            and target_above_entry_pct <= SWING_MAX_TARGET_PCT
+            and entry_above_price_pct <= SWING_MAX_ENTRY_ABOVE_PRICE_PCT
             and volume_ratio >= 0.70
             and not earnings_blocker
         ):
@@ -1137,10 +1321,8 @@ def get_swing_stock_data(symbol):
             entry_warning=entry_warning,
         )
 
-        reason = build_reason(
+        reason = build_swing_reason(
             status=status,
-            decision=decision,
-            action=action,
             rr=rr,
             score=score,
             dist=dist,
@@ -1149,6 +1331,11 @@ def get_swing_stock_data(symbol):
             trade_style=trade_style,
             entry_gap=entry_gap,
             entry_warning=entry_warning,
+            price=price,
+            entry=entry,
+            stop=stop,
+            target=target,
+            level_note=level_note,
         )
 
         stock = {
@@ -1352,4 +1539,4 @@ def remove(symbol):
 
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)
