@@ -531,36 +531,8 @@ td {
         border-color: rgba(248, 113, 113, 0.45);
     }
 
-    /*
-        Mobile quick overview:
-        Hide the less important fields from the collapsed main card.
-        These deeper fields are shown in the expandable details section.
-    */
-
-    .main-row td[data-label="Sniper"],
-    .main-row td[data-label="Grade"],
-    .main-row td[data-label="Action"],
-    .main-row td[data-label="Price"],
-    .main-row td[data-label="Change"],
-    .main-row td[data-label="Dist %"],
-    .main-row td[data-label="R/R"] {
-        display: none;
-    }
-
-    /*
-        Keep only the quick decision fields visible.
-    */
-
-    .main-row td[data-label="Symbol"],
-    .main-row td[data-label="Decision"],
-    .main-row td[data-label="Score"],
-    .main-row td[data-label="Status"],
-    .main-row td[data-label="Details"] {
+    .main-row td {
         display: flex;
-    }
-
-    .main-row td[data-label="Symbol"] {
-        display: block;
     }
 
     .main-row td[data-label="Details"] {
@@ -614,8 +586,20 @@ td {
         border-top: none;
     }
 
+    .details-row .active-position-details,
+    .details-row .wrong-ticker-warning,
+    .details-row .verdict-box,
+    .details-row .details-grid:not(.scanner-levels-grid),
+    .details-row .management-cell {
+        display: none;
+    }
+
     .details-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .scanner-levels-grid div:nth-child(n+5) {
+        display: none;
     }
 
     .main-row {
