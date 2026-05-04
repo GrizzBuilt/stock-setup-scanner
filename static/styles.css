@@ -263,6 +263,11 @@ td {
     box-shadow: inset 5px 0 0 #fbbf24;
 }
 
+.action-watch-low-priority {
+    background: rgba(156, 163, 175, 0.08);
+    box-shadow: inset 5px 0 0 #6b7280;
+}
+
 .action-wait-for-pullback {
     background: rgba(96, 165, 250, 0.08);
     box-shadow: inset 5px 0 0 #60a5fa;
@@ -510,6 +515,7 @@ td {
 
     .action-ready-now,
     .action-watch-for-break,
+    .action-watch-low-priority,
     .action-wait-for-pullback,
     .action-too-late-extended {
         box-shadow: inset 5px 0 0 currentColor;
@@ -521,6 +527,10 @@ td {
 
     .action-watch-for-break {
         border-color: rgba(251, 191, 36, 0.45);
+    }
+
+    .action-watch-low-priority {
+        border-color: rgba(156, 163, 175, 0.45);
     }
 
     .action-wait-for-pullback {

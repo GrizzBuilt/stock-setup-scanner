@@ -316,6 +316,12 @@ def build_management(
             "No confirmation, no trade."
         )
 
+    if action == "WATCH LOW PRIORITY":
+        return (
+            "Near a level, but risk/reward is weak. Keep it low priority and wait "
+            "for a cleaner setup."
+        )
+
     if action == "WAIT FOR BOUNCE":
         return (
             "Watch only. The pullback is happening, but the bounce is not confirmed. "
@@ -349,6 +355,9 @@ def build_verdict(decision, action, sniper, confidence, trade_style, status, ent
 
     if action == "WATCH FOR BREAK":
         return "WATCH ONLY — WAIT FOR BREAK"
+
+    if action == "WATCH LOW PRIORITY":
+        return "LOW PRIORITY WATCH — WEAK RISK/REWARD"
 
     if action == "WAIT FOR BOUNCE":
         return "WATCH ONLY — WAIT FOR BOUNCE"
@@ -435,6 +444,13 @@ def build_reason(
         )
 
     if status == "Breakout Watch":
+        if action == "WATCH LOW PRIORITY":
+            return (
+                f"{prefix} Near breakout, but risk/reward is weak. "
+                f"RR {round(rr, 2)} is below 1.5, so this is not top priority. "
+                f"Score {score}/10.{blocker_text}"
+            )
+
         return (
             f"{prefix} Near breakout level. Watching for breakout confirmation. "
             f"RR {round(rr, 2)}. Score {score}/10.{blocker_text}"
@@ -956,7 +972,7 @@ def get_quick_stock_data(symbol):
         if status == "Extended":
             score -= 2
 
-        if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
+        if status in ["Breakout Watch", "Breakout Triggered", "Pullback"] and rr < 1.5:
             score -= 2
 
         if risk <= 0:
@@ -981,8 +997,11 @@ def get_quick_stock_data(symbol):
         if reward <= 0:
             blockers.append("no upside target")
 
-        if status in ["Breakout Triggered", "Pullback"] and rr < 1.5:
+        if status in ["Breakout Watch", "Breakout Triggered", "Pullback"] and rr < 1.5:
             blockers.append("risk/reward below 1.5")
+
+        if status == "Breakout Watch" and rr < 1.5:
+            blockers.append("near breakout, but risk/reward is weak")
 
         if status in ["Breakout Triggered", "Pullback"] and score < 7:
             blockers.append("score below trade quality")
@@ -1026,7 +1045,12 @@ def get_quick_stock_data(symbol):
 
         elif status == "Breakout Watch":
             decision = "WATCH"
-            action = "WATCH FOR BREAK"
+
+            if rr >= 1.5 and score >= 6:
+                action = "WATCH FOR BREAK"
+            else:
+                action = "WATCH LOW PRIORITY"
+                score = min(score, 5)
 
         elif status == "Extended":
             decision = "PASS"
@@ -1647,13 +1671,15 @@ def action_priority(stock):
         "READY NOW": 0,
         "WATCH FOR BREAK": 1,
         "WAIT FOR BOUNCE": 2,
-        "WAIT FOR SWING BREAK": 3,
-        "SWING WATCH": 4,
-        "CHECK SETUP": 5,
-        "WAIT": 6,
-        "WAIT FOR RESET": 7,
-        "TOO LATE / EXTENDED": 8,
-        "PASS": 9,
+        "WAIT FOR PULLBACK": 3,
+        "WAIT FOR SWING BREAK": 4,
+        "SWING WATCH": 5,
+        "WATCH LOW PRIORITY": 6,
+        "CHECK SETUP": 7,
+        "WAIT": 8,
+        "WAIT FOR RESET": 9,
+        "TOO LATE / EXTENDED": 10,
+        "PASS": 11,
     }
 
     return priorities.get(stock.get("action"), 9)
@@ -1674,10 +1700,15 @@ def grade_priority(stock):
 def scanner_sort_key(stock):
     active_bonus = 0 if stock.get("is_active_position") else 1
     focus_bonus = 0 if is_focus_candidate(stock) else 1
+    sniper_bonus = 0 if (
+        stock.get("decision") == "TRADE"
+        and stock.get("sniper") == "YES"
+    ) else 1
 
     return (
         active_bonus,
         focus_bonus,
+        sniper_bonus,
         decision_priority(stock),
         confidence_priority(stock),
         action_priority(stock),
