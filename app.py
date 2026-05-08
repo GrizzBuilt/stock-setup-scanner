@@ -199,6 +199,7 @@ def empty_stock(symbol, message="No data"):
         "entry_warning": "NO DATA",
         "focus_rank": "",
         "focus_label": "",
+        "blockers": [],
         "reason": message,
     }
 
@@ -476,6 +477,178 @@ def build_reason(
         )
 
     return f"{prefix} No clean setup.{blocker_text}"
+
+
+def has_blocker(blockers, text):
+    text = text.lower()
+    return any(text in str(blocker).lower() for blocker in blockers)
+
+
+def resolve_final_verdict(stock):
+    blockers = stock.get("blockers", [])
+    rr = float(stock.get("rr") or 0)
+    score = int(stock.get("score") or 0)
+    status = stock.get("status") or "Setup"
+    entry_warning = stock.get("entry_warning") or ""
+    blocker_text = ", ".join(blockers)
+    has_volume_blocker = has_blocker(blockers, "volume")
+    has_invalid_blocker = (
+        has_blocker(blockers, "invalid")
+        or has_blocker(blockers, "no upside")
+        or has_blocker(blockers, "earnings")
+    )
+    has_chase_blocker = (
+        stock.get("status") in ["Extended", "Swing Extended"]
+        or stock.get("action") in ["TOO LATE / EXTENDED", "WAIT FOR RESET"]
+        or "extended" in entry_warning.lower()
+        or has_blocker(blockers, "extended")
+        or has_blocker(blockers, "chase")
+        or has_blocker(blockers, "late entry")
+    )
+
+    if stock.get("position_mode"):
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "POSITION MODE: MANAGE",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "MANAGE",
+                "verdict": "POSITION MODE: MANAGE — DO NOT ADD",
+                "management": "Manage the existing position. Do not treat this as a new-entry signal.",
+                "reason": "Position mode is active for this ticker.",
+            }
+        )
+        return stock
+
+    if has_volume_blocker:
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "WAIT FOR VOLUME",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "AVOID",
+                "verdict": "WATCH — DO NOT ENTER YET",
+                "management": "No new trade. Wait for volume confirmation.",
+                "reason": f"{status} is present, but volume is light.",
+            }
+        )
+        return stock
+
+    if has_invalid_blocker:
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "WAIT FOR CONFIRMATION",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "AVOID",
+                "verdict": "WATCH — DO NOT ENTER YET",
+                "management": "No new trade. Wait for a cleaner setup.",
+                "reason": f"{status} is present, but blocked by: {blocker_text}.",
+            }
+        )
+        return stock
+
+    if rr > 0 and rr < 1.5:
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "WAIT FOR BETTER R/R",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "AVOID",
+                "verdict": "WATCH — RISK/REWARD TOO WEAK",
+                "management": "No trade. Wait for a better risk/reward setup.",
+                "reason": f"Risk/reward is {round(rr, 2)}, below the minimum acceptable level.",
+            }
+        )
+        return stock
+
+    if has_chase_blocker:
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "WAIT FOR PULLBACK",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "AVOID",
+                "verdict": "WATCH — DO NOT CHASE",
+                "management": "No trade. Price is extended. Wait for a cleaner entry.",
+                "reason": stock.get("reason") or "Setup exists, but entry is extended.",
+            }
+        )
+        return stock
+
+    if blockers:
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "WAIT FOR CONFIRMATION",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "AVOID",
+                "verdict": "WATCH — DO NOT ENTER YET",
+                "management": "No new trade. Wait for a cleaner setup.",
+                "reason": f"{status} is present, but blocked by: {blocker_text}.",
+            }
+        )
+        return stock
+
+    if (
+        stock.get("decision") == "TRADE"
+        and stock.get("action") == "READY NOW"
+        and rr >= 1.5
+        and score >= 7
+        and stock.get("status") not in ["Extended", "Swing Extended"]
+    ):
+        stock.update(
+            {
+                "decision": "TRADE",
+                "action": "READY NOW",
+                "verdict": "TRADE — CLEAN SETUP",
+                "trade_style": "SWING" if "Swing" in status else stock.get("trade_style", "QUICK TRADE"),
+                "management": "Valid trade setup. Use planned stop and target.",
+            }
+        )
+        return stock
+
+    if stock.get("decision") == "WATCH" and stock.get("action") in [
+        "WATCH FOR BREAK",
+        "WAIT FOR BOUNCE",
+        "WAIT FOR SWING BREAK",
+        "SWING WATCH",
+    ]:
+        stock["sniper"] = "NO"
+        return stock
+
+    if score >= 6:
+        stock.update(
+            {
+                "decision": "WATCH",
+                "action": "WAIT FOR CLEANER ENTRY",
+                "sniper": "NO",
+                "confidence": "LOW",
+                "trade_style": "WAIT",
+                "verdict": "WATCH — NOT READY",
+                "management": "Setup is forming, but not clean enough yet.",
+            }
+        )
+        return stock
+
+    stock.update(
+        {
+            "decision": "PASS",
+            "action": "NO TRADE",
+            "sniper": "NO",
+            "confidence": "NONE",
+            "trade_style": "AVOID",
+            "verdict": "PASS — NO CLEAN SETUP",
+            "management": "No trade. Wait for a better setup.",
+        }
+    )
+    return stock
 
 
 def get_entry_warning(entry_gap):
@@ -1178,10 +1351,12 @@ def get_quick_stock_data(symbol):
             "entry_warning": entry_warning,
             "focus_rank": "",
             "focus_label": "",
+            "blockers": blockers,
             "reason": reason,
         }
 
         stock.update(build_hold_plan("quick", status, action, decision))
+        stock = resolve_final_verdict(stock)
 
         return add_empty_position_fields(stock)
 
@@ -1614,10 +1789,12 @@ def get_swing_stock_data(symbol):
             "entry_warning": entry_warning,
             "focus_rank": "",
             "focus_label": "",
+            "blockers": blockers,
             "reason": reason,
         }
 
         stock.update(build_hold_plan("swing", status, action, decision))
+        stock = resolve_final_verdict(stock)
 
         return add_empty_position_fields(stock)
 
@@ -1675,11 +1852,16 @@ def action_priority(stock):
         "WAIT FOR SWING BREAK": 4,
         "SWING WATCH": 5,
         "WATCH LOW PRIORITY": 6,
-        "CHECK SETUP": 7,
-        "WAIT": 8,
-        "WAIT FOR RESET": 9,
-        "TOO LATE / EXTENDED": 10,
-        "PASS": 11,
+        "WAIT FOR VOLUME": 7,
+        "WAIT FOR CONFIRMATION": 8,
+        "WAIT FOR BETTER R/R": 9,
+        "WAIT FOR CLEANER ENTRY": 10,
+        "CHECK SETUP": 11,
+        "WAIT": 12,
+        "WAIT FOR RESET": 13,
+        "TOO LATE / EXTENDED": 14,
+        "NO TRADE": 15,
+        "PASS": 16,
     }
 
     return priorities.get(stock.get("action"), 9)
